@@ -116,11 +116,19 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
 
     # Initial greeting
     if not request.message and len(messages) == 0:
-        greeting = (
-            f"Hello! I am your AI police assistant. I will help you file a First Information "
-            f"Report for the '{session.complaint_type}' incident. "
-            f"Please speak clearly and describe what happened in detail."
-        )
+        if request.language == "te":
+            greeting = (
+                f"నమస్కారం! నేను మీ AI పోలీసు సహాయకుడిని. "
+                f"'{session.complaint_type}' సంఘటనకు సంబంధించి FIRST INFORMATION REPORT (FIR) "
+                f"ఫైల్ చేయడంలో మీకు సహాయం చేస్తాను. "
+                f"దయచేసి స్పష్టంగా మాట్లాడండి మరియు ఏమి జరిగిందో వివరంగా చెప్పండి."
+            )
+        else:
+            greeting = (
+                f"Hello! I am your AI police assistant. I will help you file a First Information "
+                f"Report for the '{session.complaint_type}' incident. "
+                f"Please speak clearly and describe what happened in detail."
+            )
         messages.append({"role": "assistant", "content": greeting})
         session.messages_json = json.dumps(messages)
         db.commit()
@@ -133,7 +141,7 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
         messages.append({"role": "user", "content": request.message})
 
     new_extracted, next_question = llm_service.analyze_complaint(
-        session.complaint_type, messages, extracted_data
+        session.complaint_type, messages, extracted_data, language=request.language or "en"
     )
 
     if request.message:
@@ -144,10 +152,16 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
     finished = session.current_turn >= 3 or all_essential_filled
 
     if finished:
-        next_question = (
-            "Thank you. I have gathered all the necessary information. "
-            "Your FIR form is now ready. Please review and confirm the details."
-        )
+        if request.language == "te":
+            next_question = (
+                "ధన్యవాదాలు. నేను అవసరమైన మొత్తం సమాచారాన్ని సేకరించాను. "
+                "మీ FIR ఫారమ్ ఇప్పుడు సిద్ధంగా ఉంది. దయచేసి వివరాలను సమీక్షించి నిర్ధారించండి."
+            )
+        else:
+            next_question = (
+                "Thank you. I have gathered all the necessary information. "
+                "Your FIR form is now ready. Please review and confirm the details."
+            )
 
     messages.append({"role": "assistant", "content": next_question})
     session.messages_json = json.dumps(messages)

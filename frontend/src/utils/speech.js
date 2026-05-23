@@ -90,6 +90,19 @@ export class WebSpeechSynthesis {
   loadVoices() {
     if (!this.supported) return;
     const voices = window.speechSynthesis.getVoices();
+
+    // First try to match the currently set language
+    const langMatch = voices.find(v => v.lang.startsWith(this.lang));
+    if (langMatch) { this.voice = langMatch; return; }
+
+    // Fallback for Telugu: look for any Indian or Telugu-related voice
+    if (this.lang.startsWith("te")) {
+      const teVoice = voices.find(
+        v => v.lang.startsWith("te") || v.lang.includes("te-IN") || v.name.toLowerCase().includes("telugu")
+      );
+      if (teVoice) { this.voice = teVoice; return; }
+    }
+
     const preferredVoice = voices.find(
       (v) => v.lang.includes("en-IN") || v.name.includes("India")
     );
@@ -103,7 +116,14 @@ export class WebSpeechSynthesis {
     this.lang = lang;
     if (this.supported) {
       const voices = window.speechSynthesis.getVoices();
-      const match = voices.find(v => v.lang.startsWith(lang));
+      // Try exact match first
+      let match = voices.find(v => v.lang.startsWith(lang));
+      // For Telugu, try broader match
+      if (!match && lang.startsWith("te")) {
+        match = voices.find(
+          v => v.lang.startsWith("te") || v.name.toLowerCase().includes("telugu")
+        );
+      }
       if (match) this.voice = match;
     }
   }

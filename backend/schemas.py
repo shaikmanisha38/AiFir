@@ -38,6 +38,7 @@ class ChatRequest(BaseModel):
     message: Optional[str] = None
     complaint_type: Optional[str] = None
     user_id: Optional[int] = None
+    language: Optional[str] = "en"
 
 class ChatResponse(BaseModel):
     session_id: str
