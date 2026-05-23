@@ -116,7 +116,8 @@ def fallback_extract_and_question(
 def analyze_complaint(
     complaint_type: str,
     conversation_history: List[Dict[str, str]],
-    existing_data: Dict[str, Optional[str]]
+    existing_data: Dict[str, Optional[str]],
+    language: str = "en"
 ) -> Tuple[Dict[str, Optional[str]], str]:
     """
     Main orchestration entrypoint. Tries calling Ollama.
@@ -127,31 +128,63 @@ def analyze_complaint(
         # Fallback to local rule processor
         return fallback_extract_and_question(complaint_type, conversation_history, existing_data)
 
+    is_telugu = language == "te"
+
     # Prepare Ollama system instructions
-    system_instruction = (
-        "You are an expert police officer filing a First Information Report (FIR). "
-        "Your task is to analyze the conversation history and extract these fields: "
-        "'victim_name', 'victim_contact', 'incident_date_time', 'incident_location', 'suspect_details', 'evidence', 'description'. "
-        f"The complaint category is: {complaint_type}.\n"
-        "You must respond with valid JSON format ONLY. Do not write introductory words or normal text. "
-        "The JSON should contain: \n"
-        "1. 'extracted_fields': a dictionary of the updated fields. Keep existing values if not mentioned in new messages, or overwrite if corrected.\n"
-        "2. 'next_question': formulate a concise follow-up question (under 25 words) targeting the most critical missing field. "
-        "Prioritize: victim_name -> victim_contact -> incident_location -> incident_date_time -> suspect_details -> evidence.\n\n"
-        "Output format:\n"
-        "{\n"
-        "  \"extracted_fields\": {\n"
-        "    \"victim_name\": \"...\",\n"
-        "    \"victim_contact\": \"...\",\n"
-        "    \"incident_date_time\": \"...\",\n"
-        "    \"incident_location\": \"...\",\n"
-        "    \"suspect_details\": \"...\",\n"
-        "    \"evidence\": \"...\",\n"
-        "    \"description\": \"...\"\n"
-        "  },\n"
-        "  \"next_question\": \"...\"\n"
-        "}"
-    )
+    if is_telugu:
+        system_instruction = (
+            "You are an expert police officer filing a First Information Report (FIR) in India. "
+            "The user speaks Telugu. Analyze the Telugu conversation and extract these fields: "
+            "'victim_name' (బాధితుడి పేరు), 'victim_contact' (ఫోన్ నంబర్), "
+            "'incident_date_time' (సంఘటన తేదీ/సమయం), 'incident_location' (స్థలం), "
+            "'suspect_details' (నిందితుడి వివరాలు), 'evidence' (సాక్ష్యం), 'description' (వివరణ). "
+            f"The complaint category is: {complaint_type}.\n"
+            "You must respond with valid JSON format ONLY. Do not write introductory words or normal text. "
+            "Extract field values and put them in English or as-is from the Telugu text. "
+            "The JSON should contain: \n"
+            "1. 'extracted_fields': a dictionary of the updated fields. Keep existing values if not mentioned in new messages, or overwrite if corrected.\n"
+            "2. 'next_question': formulate a concise follow-up question in Telugu language (under 25 words) "
+            "targeting the most critical missing field. "
+            "Prioritize: victim_name -> victim_contact -> incident_location -> incident_date_time -> suspect_details -> evidence.\n\n"
+            "Output format:\n"
+            "{\n"
+            "  \"extracted_fields\": {\n"
+            "    \"victim_name\": \"...\",\n"
+            "    \"victim_contact\": \"...\",\n"
+            "    \"incident_date_time\": \"...\",\n"
+            "    \"incident_location\": \"...\",\n"
+            "    \"suspect_details\": \"...\",\n"
+            "    \"evidence\": \"...\",\n"
+            "    \"description\": \"...\"\n"
+            "  },\n"
+            "  \"next_question\": \"...\"\n"
+            "}"
+        )
+    else:
+        system_instruction = (
+            "You are an expert police officer filing a First Information Report (FIR). "
+            "Your task is to analyze the conversation history and extract these fields: "
+            "'victim_name', 'victim_contact', 'incident_date_time', 'incident_location', 'suspect_details', 'evidence', 'description'. "
+            f"The complaint category is: {complaint_type}.\n"
+            "You must respond with valid JSON format ONLY. Do not write introductory words or normal text. "
+            "The JSON should contain: \n"
+            "1. 'extracted_fields': a dictionary of the updated fields. Keep existing values if not mentioned in new messages, or overwrite if corrected.\n"
+            "2. 'next_question': formulate a concise follow-up question (under 25 words) targeting the most critical missing field. "
+            "Prioritize: victim_name -> victim_contact -> incident_location -> incident_date_time -> suspect_details -> evidence.\n\n"
+            "Output format:\n"
+            "{\n"
+            "  \"extracted_fields\": {\n"
+            "    \"victim_name\": \"...\",\n"
+            "    \"victim_contact\": \"...\",\n"
+            "    \"incident_date_time\": \"...\",\n"
+            "    \"incident_location\": \"...\",\n"
+            "    \"suspect_details\": \"...\",\n"
+            "    \"evidence\": \"...\",\n"
+            "    \"description\": \"...\"\n"
+            "  },\n"
+            "  \"next_question\": \"...\"\n"
+            "}"
+        )
 
     prompt = (
         f"Existing Data: {json.dumps(existing_data)}\n"
