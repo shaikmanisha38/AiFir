@@ -3,7 +3,7 @@ import {
   Mic, MicOff, Send, Volume2, VolumeX, FileText, Check, Edit, Printer,
   Home, History, User, Phone, MapPin, Calendar, AlertTriangle, Cpu,
   DollarSign, UserX, EyeOff, Lock, ShieldCheck, ArrowRight,
-  ChevronRight, ShieldAlert, Loader, LogIn, LogOut, Eye, Languages
+  ChevronRight, ShieldAlert, Loader, LogIn, LogOut, Eye
 } from "lucide-react";
 
 import { WebSpeechRecognition, WebSpeechSynthesis } from "./utils/speech";
@@ -51,9 +51,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [speechLang, setSpeechLang] = useState(() => localStorage.getItem("speech_lang") || "en-IN");
-
-  const lang = speechLang === "te-IN" ? "te" : "en";
+  const lang = "en";
   const isAuthenticated = !!authToken && !!authUser;
 
   const extractionFields = [
@@ -177,9 +175,7 @@ export default function App() {
   };
 
   const startSessionClient = (type) => {
-    const greeting = lang === "te"
-      ? `నమస్కారం. నేను మీ డిజిటల్ పోలీసు సహాయకుడిని. '${type}' సంఘటనకు సంబంధించి FIRST INFORMATION REPORT (FIR) ఫైల్ చేయడంలో మీకు సహాయం చేస్తాను. దయచేసి మీ స్వంత మాటలలో ఏమి జరిగిందో వివరించండి, నేను వివరాలను సేకరిస్తాను. (మీరు తెలుగులో మాట్లాడవచ్చు)`
-      : `Hello, I am your digital police assistant. I will help you file a First Information Report (FIR) for the '${type}' incident. Please describe what happened in your own words, and I will extract the details.`;
+    const greeting = `Hello, I am your digital police assistant. I will help you file a First Information Report (FIR) for the '${type}' incident. Please describe what happened in your own words, and I will extract the details.`;
     setTranscript([{ role: "assistant", content: greeting }]);
   };
 
@@ -291,16 +287,38 @@ export default function App() {
     const history = [...transcript, { role: "user", content: userText }];
     setTranscript(history);
     const updated = { ...extractedData };
-    const fullText = history.filter(m => m.role === "user").map(m => m.content).join(" ");
+    const lastUser = userText;
 
-    if (!updated.victim_name) { const v = extractName(fullText); if (v) updated.victim_name = v; }
-    if (!updated.victim_contact) { const v = extractPhone(fullText); if (v) updated.victim_contact = v; }
-    if (!updated.incident_location) { const v = extractLocation(fullText); if (v) updated.incident_location = v; }
-    if (!updated.incident_date_time) { const v = extractDateTime(fullText); if (v) updated.incident_date_time = v; }
-    if (!updated.suspect_details) { const v = extractSuspect(fullText); if (v) updated.suspect_details = v; }
-    if (!updated.evidence) { const v = extractEvidence(fullText); if (v) updated.evidence = v; }
-    if (!updated.witness) { const v = extractWitness(fullText); if (v) updated.witness = v; }
-    if (!updated.description || updated.description.length < fullText.length) updated.description = fullText;
+    // Extract only the field that was just asked about (sequential chain)
+    if (!updated.victim_name) {
+      const v = extractName(lastUser);
+      if (v) updated.victim_name = v;
+      else if (lastUser.length >= 2) updated.victim_name = lastUser.trim();
+    } else if (!updated.victim_contact) {
+      const v = extractPhone(lastUser);
+      if (v) updated.victim_contact = v;
+      else if (lastUser.length >= 2) updated.victim_contact = lastUser.trim();
+    } else if (!updated.incident_location) {
+      const v = extractLocation(lastUser);
+      if (v) updated.incident_location = v;
+      else if (lastUser.length >= 3) updated.incident_location = lastUser.trim().replace(/[.,;]+$/, "");
+    } else if (!updated.incident_date_time) {
+      const v = extractDateTime(lastUser);
+      if (v) updated.incident_date_time = v;
+      else if (lastUser.length >= 3) updated.incident_date_time = lastUser.trim();
+    } else if (!updated.suspect_details && ["Theft","Burglary","Assault","Harassment","Cyber Crime","Missing Person"].includes(complaintType)) {
+      const v = extractSuspect(lastUser);
+      if (v) updated.suspect_details = v;
+      else if (lastUser.length >= 3) updated.suspect_details = lastUser.trim().replace(/[.!?]+$/, "");
+    } else if (!updated.evidence) {
+      const v = extractEvidence(lastUser);
+      if (v) updated.evidence = v;
+      else if (lastUser.length >= 3) updated.evidence = lastUser.trim().replace(/[.!?]+$/, "");
+    } else if (!updated.witness) {
+      if (lastUser.length >= 3) updated.witness = lastUser.trim().replace(/[.!?]+$/, "");
+    } else if (!updated.description) {
+      if (lastUser.length >= 3) updated.description = lastUser.trim();
+    }
 
     setExtractedData(updated);
     const nextTurn = currentTurn + 1;
@@ -313,6 +331,7 @@ export default function App() {
     else if (!updated.suspect_details && ["Theft","Burglary","Assault","Harassment","Cyber Crime","Missing Person"].includes(complaintType)) nextQ = t("ask.suspect", lang);
     else if (!updated.evidence) nextQ = t("ask.evidence", lang);
     else if (!updated.witness) nextQ = t("ask.witness", lang);
+    else if (!updated.description) nextQ = t("ask.description", lang);
     else nextQ = t("ask.done", lang);
     setTimeout(() => setTranscript(prev => [...prev, { role: "assistant", content: nextQ }]), 600);
   };
@@ -339,7 +358,7 @@ export default function App() {
     if (isRecording) { speechRecognitionRef.current.stop(); setIsRecording(false); }
     else {
       setRecognitionError(""); setIsRecording(true);
-      speechRecognitionRef.current.setLanguage(speechLang);
+      speechRecognitionRef.current.setLanguage("en-IN");
       speechRecognitionRef.current.start(
         (t) => { setIsRecording(false); sendMessage(t); },
         (e) => { setIsRecording(false); setRecognitionError(`Speech: ${e}`); },
@@ -561,11 +580,6 @@ export default function App() {
                   <p style={{ fontSize: "0.78rem", color: "var(--text-2)" }}>{t("chat.turn_info", lang, { turn: currentTurn })}</p>
                 </div>
                 <div style={{ display: "flex", gap: "0.35rem" }}>
-                  <button className="btn btn-ghost" style={{ padding: "0.25rem 0.5rem", fontSize: "0.72rem" }}
-                    onClick={() => { const l = speechLang === "en-IN" ? "te-IN" : "en-IN"; setSpeechLang(l); localStorage.setItem("speech_lang", l); speechRecognitionRef.current?.setLanguage(l); speechSynthesisRef.current?.setLanguage(l); }}>
-                    <Languages size={13} />
-                    <span>{speechLang === "en-IN" ? t("chat.lang_te", lang) : t("chat.lang_en", lang)}</span>
-                  </button>
                   <button className="btn btn-ghost" style={{ padding: "0.25rem 0.5rem", fontSize: "0.72rem" }} onClick={() => setIsMuted(!isMuted)}>
                     {isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
                     <span>{isMuted ? t("chat.unmute", lang) : t("chat.mute", lang)}</span>
