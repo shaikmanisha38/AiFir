@@ -38,6 +38,7 @@ def fallback_extract_and_question(
     
     # Concatenate all user messages to analyze full context
     user_texts = [msg["content"] for msg in conversation_history if msg["role"] == "user"]
+    assistant_msgs = [msg["content"] for msg in conversation_history if msg["role"] == "assistant"]
     full_text = " ".join(user_texts)
     
     # 1. Heuristic Extraction
@@ -86,13 +87,12 @@ def fallback_extract_and_question(
         if evidence_match:
             updated_data["evidence"] = evidence_match.group(0).strip()
 
-    # Description (fill with the general text)
-    if not updated_data.get("description"):
-        updated_data["description"] = full_text[:500]
-    else:
-        # Append latest user input to build the full description
-        if len(user_texts) > 0 and user_texts[-1] not in updated_data["description"]:
-            updated_data["description"] += f" | {user_texts[-1]}"
+    # Description (only from last user message if description was the last question asked)
+    last_q = assistant_msgs[-1].lower() if assistant_msgs else ""
+    is_desc_question = any(w in last_q for w in ["complaint", "in your own words", "describe the full"])
+    if is_desc_question and not updated_data.get("description"):
+        if user_texts and len(user_texts[-1]) >= 3:
+            updated_data["description"] = user_texts[-1].strip()
 
     # 2. Find missing information and generate next question
     # Order of importance: Name -> Contact -> Location -> Date/Time -> Suspect Details
@@ -108,6 +108,8 @@ def fallback_extract_and_question(
         question = "Can you describe the suspect? Mention their clothing, height, or any identifying marks if known."
     elif not updated_data.get("evidence"):
         question = "Is there any evidence, photos, or CCTV footage available at the location?"
+    elif not updated_data.get("description"):
+        question = "Tell me your complaint. Describe the full incident in your own words."
     else:
         question = "Got it. Do you have any additional details or witnesses to add, or should we compile the form now?"
 
@@ -128,40 +130,7 @@ def analyze_complaint(
         # Fallback to local rule processor
         return fallback_extract_and_question(complaint_type, conversation_history, existing_data)
 
-    is_telugu = language == "te"
-
-    # Prepare Ollama system instructions
-    if is_telugu:
-        system_instruction = (
-            "You are an expert police officer filing a First Information Report (FIR) in India. "
-            "The user speaks Telugu. Analyze the Telugu conversation and extract these fields: "
-            "'victim_name' (బాధితుడి పేరు), 'victim_contact' (ఫోన్ నంబర్), "
-            "'incident_date_time' (సంఘటన తేదీ/సమయం), 'incident_location' (స్థలం), "
-            "'suspect_details' (నిందితుడి వివరాలు), 'evidence' (సాక్ష్యం), 'description' (వివరణ). "
-            f"The complaint category is: {complaint_type}.\n"
-            "You must respond with valid JSON format ONLY. Do not write introductory words or normal text. "
-            "Extract field values and put them in English or as-is from the Telugu text. "
-            "The JSON should contain: \n"
-            "1. 'extracted_fields': a dictionary of the updated fields. Keep existing values if not mentioned in new messages, or overwrite if corrected.\n"
-            "2. 'next_question': formulate a concise follow-up question in Telugu language (under 25 words) "
-            "targeting the most critical missing field. "
-            "Prioritize: victim_name -> victim_contact -> incident_location -> incident_date_time -> suspect_details -> evidence.\n\n"
-            "Output format:\n"
-            "{\n"
-            "  \"extracted_fields\": {\n"
-            "    \"victim_name\": \"...\",\n"
-            "    \"victim_contact\": \"...\",\n"
-            "    \"incident_date_time\": \"...\",\n"
-            "    \"incident_location\": \"...\",\n"
-            "    \"suspect_details\": \"...\",\n"
-            "    \"evidence\": \"...\",\n"
-            "    \"description\": \"...\"\n"
-            "  },\n"
-            "  \"next_question\": \"...\"\n"
-            "}"
-        )
-    else:
-        system_instruction = (
+    system_instruction = (
             "You are an expert police officer filing a First Information Report (FIR). "
             "Your task is to analyze the conversation history and extract these fields: "
             "'victim_name', 'victim_contact', 'incident_date_time', 'incident_location', 'suspect_details', 'evidence', 'description'. "

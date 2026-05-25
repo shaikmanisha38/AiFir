@@ -4,14 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from .database import engine, Base, get_db
-from .models import FIRReport, ChatSession, User
-from .schemas import (
+from database import engine, Base, get_db
+from models import FIRReport, ChatSession, User
+from schemas import (
     ChatRequest, ChatResponse, FIRCreate, FIRResponse,
     SystemStatus, UserRegister, UserLogin, Token, UserResponse
 )
-from .services import llm_service
-from .services.auth_service import hash_password, verify_password, create_access_token, decode_token
+from services import llm_service
+from services.auth_service import hash_password, verify_password, create_access_token, decode_token
 
 # Auto-create all DB tables
 Base.metadata.create_all(bind=engine)
@@ -116,19 +116,11 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
 
     # Initial greeting
     if not request.message and len(messages) == 0:
-        if request.language == "te":
-            greeting = (
-                f"నమస్కారం! నేను మీ AI పోలీసు సహాయకుడిని. "
-                f"'{session.complaint_type}' సంఘటనకు సంబంధించి FIRST INFORMATION REPORT (FIR) "
-                f"ఫైల్ చేయడంలో మీకు సహాయం చేస్తాను. "
-                f"దయచేసి స్పష్టంగా మాట్లాడండి మరియు ఏమి జరిగిందో వివరంగా చెప్పండి."
-            )
-        else:
-            greeting = (
-                f"Hello! I am your AI police assistant. I will help you file a First Information "
-                f"Report for the '{session.complaint_type}' incident. "
-                f"Please speak clearly and describe what happened in detail."
-            )
+        greeting = (
+            f"Hello! I am your AI police assistant. I will help you file a First Information "
+            f"Report for the '{session.complaint_type}' incident. "
+            f"Please speak clearly and describe what happened in detail."
+        )
         messages.append({"role": "assistant", "content": greeting})
         session.messages_json = json.dumps(messages)
         db.commit()
@@ -147,21 +139,15 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
     if request.message:
         session.current_turn += 1
 
-    essential_fields = ["victim_name", "victim_contact", "incident_location", "incident_date_time"]
+    essential_fields = ["victim_name", "victim_contact", "incident_location", "incident_date_time", "description"]
     all_essential_filled = all(new_extracted.get(f) for f in essential_fields)
     finished = session.current_turn >= 3 or all_essential_filled
 
     if finished:
-        if request.language == "te":
-            next_question = (
-                "ధన్యవాదాలు. నేను అవసరమైన మొత్తం సమాచారాన్ని సేకరించాను. "
-                "మీ FIR ఫారమ్ ఇప్పుడు సిద్ధంగా ఉంది. దయచేసి వివరాలను సమీక్షించి నిర్ధారించండి."
-            )
-        else:
-            next_question = (
-                "Thank you. I have gathered all the necessary information. "
-                "Your FIR form is now ready. Please review and confirm the details."
-            )
+        next_question = (
+            "Thank you. I have gathered all the necessary information. "
+            "Your FIR form is now ready. Please review and confirm the details."
+        )
 
     messages.append({"role": "assistant", "content": next_question})
     session.messages_json = json.dumps(messages)
