@@ -2,6 +2,7 @@
 
 const LANG_MAP = {
   "en-IN": "en-IN",
+  "hi-IN": "hi-IN",
   "te-IN": "te-IN"
 };
 

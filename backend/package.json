@@ -1,0 +1,14 @@
+{
+  "name": "fir-backend",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "mongoose": "^8.8.0",
+    "uuid": "^10.0.0"
+  }
+}

@@ -13,31 +13,14 @@ if ! command -v node &> /dev/null; then
 fi
 echo "[OK] Node.js found."
 
-# Check Python
-PYTHON_CMD="python3"
-if ! command -v python3 &> /dev/null; then
-    if command -v python &> /dev/null; then
-        PYTHON_CMD="python"
-    else
-        echo "[ERROR] Python was not found. Please install Python 3."
-        exit 1
-    fi
-fi
-echo "[OK] Python found ($PYTHON_CMD)."
-
 # Backend Setup
 echo ""
-echo "=== Setting up FastAPI Backend ==="
+echo "=== Setting up Node.js Backend ==="
 cd backend
-if [ ! -d "venv" ]; then
-    echo "Creating Python virtual environment (venv)..."
-    $PYTHON_CMD -m venv venv
+if [ ! -d "node_modules" ]; then
+    echo "Installing Node packages..."
+    npm install
 fi
-echo "Activating virtual environment..."
-source venv/bin/activate
-echo "Installing backend requirements..."
-pip install --upgrade pip
-pip install -r requirements.txt
 echo "[OK] Backend environment prepared."
 cd ..
 
@@ -65,10 +48,9 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM EXIT
 
-# Start backend
+# Start backend (auto-reload with --watch)
 cd backend
-source venv/bin/activate
-uvicorn main:app --reload --port 8000 &
+node --watch server.mjs &
 BACKEND_PID=$!
 cd ..
 
