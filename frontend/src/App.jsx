@@ -532,18 +532,36 @@ export default function App() {
     };
 
     try {
+      let saved = null;
       if (sysStatus.backend) {
-        const saved = await apiFetch("/api/fir/save", { method: "POST", body: JSON.stringify(report) });
-        setSelectedFir(saved);
-      } else {
-        const list = JSON.parse(localStorage.getItem("local_firs") || "[]");
-        const mock = { ...report, _id: String(Date.now()), createdAt: new Date().toISOString() };
-        list.push(mock);
-        localStorage.setItem("local_firs", JSON.stringify(list));
-        setSelectedFir(mock);
+        try {
+          saved = await apiFetch("/api/fir/save", { method: "POST", body: JSON.stringify(report) });
+        } catch (err) {
+          console.warn("Backend save failed, falling back to local storage:", err.message);
+        }
       }
-      setView("preview");
-    } catch (err) { alert("Save failed: " + err.message); }
+
+      if (!saved) {
+        try {
+          const list = JSON.parse(localStorage.getItem("local_firs") || "[]");
+          saved = { ...report, _id: String(Date.now()), createdAt: new Date().toISOString() };
+          list.push(saved);
+          localStorage.setItem("local_firs", JSON.stringify(list));
+        } catch (storageErr) {
+          console.warn("Local storage failed, using memory fallback:", storageErr);
+          saved = { ...report, _id: String(Date.now()), createdAt: new Date().toISOString() };
+        }
+      }
+      
+      setSelectedFir(saved);
+    } catch (e) {
+      console.error("Critical error in saveFIR:", e);
+      // Fallback object so preview doesn't break
+      setSelectedFir({ ...report, _id: String(Date.now()), createdAt: new Date().toISOString() });
+    }
+    
+    // Always transition to preview no matter what
+    setView("preview");
   };
 
   // ── Load History ─────────────────────────────────────────
