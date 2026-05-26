@@ -36,9 +36,9 @@ const LANGUAGE_NAMES = {
 };
 
 const GREETINGS = {
-  en: "Hello! I am your AI police assistant. I will help you file a First Information Report. Please describe the incident in detail when the microphone is active.",
-  hi: "नमस्ते! मैं आपका AI पुलिस सहायक हूं। मैं आपको प्रथम सूचना रिपोर्ट दर्ज करने में मदद करूंगा। जब माइक्रोफोन सक्रिय हो तो कृपया घटना का विस्तार से वर्णन करें।",
-  te: "నమస్కారం! నేను మీ AI పోలీసు సహాయకుడిని. మీరు ఫస్ట్ ఇన్ఫర్మేషన్ రిపోర్ట్ ఫైల్ చేయడంలో నేను సహాయం చేస్తాను. మైక్రోఫోన్ యాక్టివ్‌గా ఉన్నప్పుడు దయచేసి సంఘటనను వివరంగా వివరించండి.",
+  en: "Hello! I am your AI police assistant. What is your complaint? Please describe what happened in detail.",
+  hi: "नमस्ते! मैं आपका एआई पुलिस सहायक हूं। आपकी शिकायत क्या है? कृपया विस्तार से बताएं कि क्या हुआ।",
+  te: "నమస్కారం! నేను మీ AI పోలీసు సహాయకుడిని. మీ ఫిర్యాదు ఏమిటి? దయచేసి ఏమి జరిగిందో వివరంగా చెప్పండి.",
 };
 
 const QUESTIONS = {

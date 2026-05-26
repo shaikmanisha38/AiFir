@@ -49,8 +49,8 @@ router.post("/message", async (req, res) => {
     }
 
     if (message) {
-      // Detect language from user message
-      const msgLang = detectLanguage(message);
+      // Respect frontend-provided language; fall back to detection
+      const msgLang = language || detectLanguage(message);
       session.language = msgLang;
       messages.push({ role: "user", content: message });
     }

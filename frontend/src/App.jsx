@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { WebSpeechRecognition, WebSpeechSynthesis } from "./utils/speech";
 import AudioVisualizer from "./components/AudioVisualizer";
-import { detectLanguage, LANG_NAMES, LANG_TTS } from "./utils/language";
+import { detectLanguage, GREETING, LANG_NAMES, LANG_TTS } from "./utils/language";
 import { downloadFIR } from "./utils/pdf";
 
 const API = "http://localhost:8000";
@@ -100,33 +100,80 @@ function extractEvidence(t) {
 }
 
 // ─── Client-side fallback ─────────────────────────────────
-function clientSideProcess(text, existing, history, turn, cType) {
+const CLIENT_QUESTIONS = {
+  en: [
+    ["victim_name",        "To register your complaint, could you please tell me your full name?"],
+    ["victim_contact",     "What is your 10-digit contact number?"],
+    ["incident_location",  "Where exactly did this incident take place?"],
+    ["incident_date_time", "What was the date and approximate time of the incident?"],
+    ["suspect_details",    "Can you describe the suspect or attacker?"],
+    ["stolen_item",        "What items were stolen or taken? Describe them."],
+    ["vehicle_number",     "What is the vehicle number involved?"],
+    ["evidence",           "Is there any CCTV, witnesses, or evidence available?"],
+  ],
+  hi: [
+    ["victim_name",        "अपनी शिकायत दर्ज कराने के लिए, कृपया मुझे अपना पूरा नाम बताएं?"],
+    ["victim_contact",     "आपका 10 अंकों का संपर्क नंबर क्या है?"],
+    ["incident_location",  "घटना कहां हुई? कृपया स्थान या पता बताएं।"],
+    ["incident_date_time", "यह घटना कब हुई? तारीख और समय बताएं।"],
+    ["suspect_details",    "क्या आप संदिग्ध का वर्णन कर सकते हैं?"],
+    ["stolen_item",        "क्या सामान चोरी हुआ? उनका वर्णन करें।"],
+    ["vehicle_number",     "वाहन नंबर क्या है?"],
+    ["evidence",           "क्या कोई सीसीटीवी या गवाह है?"],
+  ],
+  te: [
+    ["victim_name",        "మీ ఫిర్యాదును నమోదు చేయడానికి, దయచేసి మీ పూర్తి పేరు చెప్పగలరా?"],
+    ["victim_contact",     "మీ 10 అంకెల సంప్రదింపు నంబర్ ఏమిటి?"],
+    ["incident_location",  "సంఘటన ఎక్కడ జరిగింది? స్థలం లేదా చిరునామా ఇవ్వండి."],
+    ["incident_date_time", "ఇది ఎప్పుడు జరిగింది? తేదీ మరియు సమయం చెప్పండి."],
+    ["suspect_details",    "మీరు నిందితుడిని వివరించగలరా?"],
+    ["stolen_item",        "ఏ వస్తువులు చోరీ అయ్యాయి? వాటిని వివరించండి."],
+    ["vehicle_number",     "వాహన నంబర్ ఏమిటి?"],
+    ["evidence",           "సీసీటీవీ లేదా సాక్షులు ఉన్నారా?"],
+  ],
+};
+
+function identifyAskedField(lastQ) {
+  if (!lastQ) return null;
+  const prefixLen = 25;
+  for (const [, qlist] of Object.entries(CLIENT_QUESTIONS)) {
+    for (const [field, qText] of qlist) {
+      const prefix = qText.toLowerCase().slice(0, prefixLen);
+      if (lastQ.includes(prefix)) return field;
+    }
+  }
+  return null;
+}
+
+function clientSideProcess(text, existing, history, turn, cType, sessionLang) {
   const updated = { ...existing };
   const userMsgs = [...history.filter(m => m.role === "user").map(m => m.content), text];
   const full = userMsgs.join(" ");
 
-  const lang = detectLanguage(text);
+  const lang = sessionLang || detectLanguage(text);
+  const allFields = ["victim_name","victim_contact","incident_location","incident_date_time","suspect_details","stolen_item","vehicle_number","evidence"];
 
-  // Last asked field
   const lastBot = [...history].reverse().find(m => m.role === "assistant");
   const lastQ = lastBot?.content?.toLowerCase() || "";
 
-  // Keyword-based extraction from last question
+  // Keyword-based extraction from last question (English keywords)
   if (lastQ.includes("name"))       updated.victim_name        ||= text.trim().replace(/\b\w/g, c => c.toUpperCase());
   if (lastQ.includes("contact") || lastQ.includes("phone") || lastQ.includes("number") || lastQ.includes("mobile"))
-    updated.victim_contact ||= text.replace(/\D/g, "").slice(0, 10) || text.trim();
-  if (lastQ.includes("location") || lastQ.includes("where"))  updated.incident_location  ||= text.trim();
-  if (lastQ.includes("date") || lastQ.includes("time"))       updated.incident_date_time ||= text.trim();
+    updated.victim_contact ||= extractPhone(text) || text.replace(/\D/g, "").slice(0, 10) || text.trim();
+  if (lastQ.includes("where exactly") || lastQ.includes("address") || lastQ.includes("take place"))
+    updated.incident_location ||= text.trim();
+  if (lastQ.includes("date and") || lastQ.includes("what was the date"))
+    updated.incident_date_time ||= text.trim();
   if (lastQ.includes("suspect") || lastQ.includes("thief") || lastQ.includes("attacker"))
     updated.suspect_details ||= text.trim();
   if (lastQ.includes("stolen") || lastQ.includes("items") || lastQ.includes("taken"))
     updated.stolen_item ||= text.trim();
   if (lastQ.includes("vehicle") || lastQ.includes("car") || lastQ.includes("bike"))
-    updated.vehicle_number ||= text.trim();
+    updated.vehicle_number ||= extractVehicle(text) || text.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 15) || text.trim();
   if (lastQ.includes("evidence") || lastQ.includes("cctv") || lastQ.includes("witness"))
     updated.evidence ||= text.trim();
 
-  // Deep regex extraction from all user speech
+  // Deep regex extraction from all user speech (English patterns)
   if (!updated.victim_name) {
     const n = extractName(full);
     if (n) updated.victim_name = n.replace(/\b\w/g, c => c.toUpperCase());
@@ -168,45 +215,26 @@ function clientSideProcess(text, existing, history, turn, cType) {
     if (e) updated.evidence = e;
   }
 
+  // Fallback for non-English: nothing was extracted by keyword/regex,
+  // so accept the user's response as the answer for whichever field was just asked
+  const asked = identifyAskedField(lastQ);
+  if (asked && !updated[asked]) {
+    if (asked === "victim_contact") {
+      const digits = text.replace(/\D/g, "");
+      updated[asked] = extractPhone(text) || digits.slice(0, 10) || text.trim();
+    } else if (asked === "vehicle_number") {
+      const cleaned = text.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 15);
+      updated[asked] = cleaned || text.trim();
+    } else {
+      updated[asked] = text.trim();
+    }
+  }
+
   updated.description = full.slice(0, 1000);
 
-  const allFields = ["victim_name","victim_contact","incident_location","incident_date_time","suspect_details","stolen_item","vehicle_number","evidence"];
   const done = turn >= 8 || allFields.every(f => updated[f]);
 
-  const questions = {
-    en: [
-      ["victim_name",        "To register your complaint, could you please tell me your full name?"],
-      ["victim_contact",     "What is your 10-digit contact number?"],
-      ["incident_location",  "Where exactly did this incident take place?"],
-      ["incident_date_time", "What was the date and approximate time of the incident?"],
-      ["suspect_details",    "Can you describe the suspect or attacker?"],
-      ["stolen_item",        "What items were stolen or taken? Describe them."],
-      ["vehicle_number",     "What is the vehicle number involved?"],
-      ["evidence",           "Is there any CCTV, witnesses, or evidence available?"],
-    ],
-    hi: [
-      ["victim_name",        "अपनी शिकायत दर्ज कराने के लिए, कृपया मुझे अपना पूरा नाम बताएं?"],
-      ["victim_contact",     "आपका 10 अंकों का संपर्क नंबर क्या है?"],
-      ["incident_location",  "घटना कहां हुई? कृपया स्थान या पता बताएं।"],
-      ["incident_date_time", "यह घटना कब हुई? तारीख और समय बताएं।"],
-      ["suspect_details",    "क्या आप संदिग्ध का वर्णन कर सकते हैं?"],
-      ["stolen_item",        "क्या सामान चोरी हुआ? उनका वर्णन करें।"],
-      ["vehicle_number",     "वाहन नंबर क्या है?"],
-      ["evidence",           "क्या कोई सीसीटीवी या गवाह है?"],
-    ],
-    te: [
-      ["victim_name",        "మీ ఫిర్యాదును నమోదు చేయడానికి, దయచేసి మీ పూర్తి పేరు చెప్పగలరా?"],
-      ["victim_contact",     "మీ 10 అంకెల సంప్రదింపు నంబర్ ఏమిటి?"],
-      ["incident_location",  "సంఘటన ఎక్కడ జరిగింది? స్థలం లేదా చిరునామా ఇవ్వండి."],
-      ["incident_date_time", "ఇది ఎప్పుడు జరిగింది? తేదీ మరియు సమయం చెప్పండి."],
-      ["suspect_details",    "మీరు నిందితుడిని వివరించగలరా?"],
-      ["stolen_item",        "ఏ వస్తువులు చోరీ అయ్యాయి? వాటిని వివరించండి."],
-      ["vehicle_number",     "వాహన నంబర్ ఏమిటి?"],
-      ["evidence",           "సీసీటీవీ లేదా సాక్షులు ఉన్నారా?"],
-    ],
-  };
-
-  const qs = questions[lang] || questions.en;
+  const qs = CLIENT_QUESTIONS[lang] || CLIENT_QUESTIONS.en;
   const nextQ = done
     ? (lang === "hi" ? "धन्यवाद। आपका FIR फॉर्म तैयार है। कृपया 'Review Form' पर टैप करें।" :
        lang === "te" ? "ధన్యవాదాలు. మీ FIR ఫారమ్ సిద్ధంగా ఉంది. దయచేసి 'Review Form' నొక్కండి." :
@@ -404,7 +432,9 @@ export default function App() {
     });
 
     const userLang = detectLanguage(text);
-    setDetectedLang(userLang);
+    // Use the user's explicit language selection as the session language
+    const sessionLang = speechLang === "en-IN" ? "en" : speechLang === "hi-IN" ? "hi" : "te";
+    setDetectedLang(sessionLang);
 
     let reply, data = null;
 
@@ -416,7 +446,7 @@ export default function App() {
             session_id: sessionId,
             message: text,
             complaint_type: complaintType,
-            language: userLang,
+            language: sessionLang,
           }),
         });
       } catch {
@@ -425,7 +455,7 @@ export default function App() {
     }
 
     if (!data) {
-      const result = clientSideProcess(text, curExtracted, curTranscript, curTurn, complaintType);
+      const result = clientSideProcess(text, curExtracted, curTranscript, curTurn, complaintType, sessionLang);
       reply = result.reply;
       data = { extracted_data: result.extracted, finished: result.done, language: result.lang };
       extractedDataRef.current = result.extracted;
@@ -469,20 +499,23 @@ export default function App() {
     setChatFinished(false); setCurrentTurn(0);
     setLiveText(""); setVoiceError(""); setView("chat");
 
-    let greeting, respLang = "en";
+    const langCode = speechLang === "en-IN" ? "en" : speechLang === "hi-IN" ? "hi" : "te";
+    let greeting, respLang = langCode;
+    const typeLabel = type.toLowerCase();
+    const defaultGreeting = (GREETING[langCode] || GREETING.en).replace(/\{type\}/g, typeLabel);
     try {
       if (sysStatus.backend) {
         const d = await apiFetch("/api/chat/message", {
           method: "POST",
-          body: JSON.stringify({ session_id: sid, complaint_type: type }),
+          body: JSON.stringify({ session_id: sid, complaint_type: type, language: langCode }),
         });
-        greeting = d.message;
+        greeting = d.message || defaultGreeting;
         if (d.language) respLang = d.language;
       } else {
-        greeting = `Hello! I am your AI police assistant. I will help you file a FIR for '${type}'. Speak in English, Hindi, or Telugu.`;
+        greeting = defaultGreeting;
       }
     } catch {
-      greeting = `Hello! I will help you file a FIR for '${type}'. Speak when the microphone is active.`;
+      greeting = defaultGreeting;
     }
 
     setTranscript([{ role: "assistant", content: greeting }]);

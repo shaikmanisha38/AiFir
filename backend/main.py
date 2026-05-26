@@ -117,9 +117,8 @@ def handle_chat_message(request: ChatRequest, db: Session = Depends(get_db)):
     # Initial greeting
     if not request.message and len(messages) == 0:
         greeting = (
-            f"Hello! I am your AI police assistant. I will help you file a First Information "
-            f"Report for the '{session.complaint_type}' incident. "
-            f"Please speak clearly and describe what happened in detail."
+            "Hello! I am your AI police assistant. "
+            "What is your complaint? Please describe what happened in detail."
         )
         messages.append({"role": "assistant", "content": greeting})
         session.messages_json = json.dumps(messages)

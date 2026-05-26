@@ -37,6 +37,12 @@ export const LANG_TTS = {
   te: "te-IN",
 };
 
+export const GREETING = {
+  en: "Hello! I am your AI police assistant. What is your complaint? Please describe what happened in detail.",
+  hi: "नमस्ते! मैं आपका एआई पुलिस सहायक हूं। आपकी शिकायत क्या है? कृपया विस्तार से बताएं कि क्या हुआ।",
+  te: "నమస్కారం! నేను మీ AI పోలీసు సహాయకుడిని. మీ ఫిర్యాదు ఏమిటి? దయచేసి ఏమి జరిగిందో వివరంగా చెప్పండి.",
+};
+
 export const MULTILINGUAL_QUESTIONS = {
   victim_name: {
     en: "To register your complaint, could you please tell me your full name?",

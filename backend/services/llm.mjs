@@ -1,4 +1,4 @@
-import { getQuestion } from "./language.mjs";
+import { getQuestion, QUESTIONS } from "./language.mjs";
 
 const EXTRACTION_FIELDS = [
   "victim_name", "victim_contact", "incident_location",
@@ -65,13 +65,32 @@ function extractEvidence(text) {
   return m ? m[0].trim() : null;
 }
 
+// --- Identify which field a question is about (multilingual) ---
+function identifyFieldFromQuestion(content) {
+  if (!content) return null;
+  const c = content.toLowerCase();
+  for (const lang of ["en", "hi", "te"]) {
+    for (const field of EXTRACTION_FIELDS) {
+      let qText = (QUESTIONS[field]?.[lang] || "").toLowerCase();
+      if (!qText) continue;
+      // For questions with {name} placeholder, use the part after it
+      if (qText.includes("{name}")) {
+        qText = qText.split("{name}").pop() || "";
+      }
+      const prefix = qText.trim().slice(0, 25);
+      if (prefix && c.includes(prefix)) return field;
+    }
+  }
+  return null;
+}
+
 // --- What was last asked ---
 function whatWasLastAsked(messages) {
   const fieldKeywords = {
     victim_name:        ["name", "full name", "your name"],
     victim_contact:     ["contact", "phone", "number", "digit", "mobile", "reach you"],
-    incident_location:  ["location", "address", "where", "place"],
-    incident_date_time: ["date", "time", "when", "day"],
+    incident_location:  ["location", "address", "place", "where exactly"],
+    incident_date_time: ["date and", "what was the date"],
     suspect_details:    ["suspect", "thief", "attacker", "the person"],
     stolen_item:        ["stolen", "items", "taken", "stole", "snatched"],
     vehicle_number:     ["vehicle", "car", "bike", "number plate"],
@@ -82,9 +101,13 @@ function whatWasLastAsked(messages) {
     const msg = messages[i];
     if (msg.role === "assistant") {
       const c = msg.content.toLowerCase();
+      // Try English keywords first
       for (const [field, kws] of Object.entries(fieldKeywords)) {
         if (kws.some(k => c.includes(k))) return field;
       }
+      // Fallback: match against question templates in all languages
+      const identified = identifyFieldFromQuestion(msg.content);
+      if (identified) return identified;
     }
   }
   return null;
@@ -97,8 +120,8 @@ function countAsked(messages) {
   const fieldKeywords = {
     victim_name:        ["name", "full name"],
     victim_contact:     ["contact", "phone", "number", "digit", "mobile"],
-    incident_location:  ["location", "address", "where", "place"],
-    incident_date_time: ["date", "time", "when"],
+    incident_location:  ["location", "address", "place", "where exactly"],
+    incident_date_time: ["date and", "what was the date"],
     suspect_details:    ["suspect", "thief", "attacker"],
     stolen_item:        ["stolen", "items", "taken", "stole"],
     vehicle_number:     ["vehicle", "car", "bike", "number plate"],
@@ -107,8 +130,13 @@ function countAsked(messages) {
   for (const msg of messages) {
     if (msg.role === "assistant") {
       const c = msg.content.toLowerCase();
+      let matched = false;
       for (const [field, kws] of Object.entries(fieldKeywords)) {
-        if (kws.some(k => c.includes(k))) counts[field]++;
+        if (kws.some(k => c.includes(k))) { counts[field]++; matched = true; break; }
+      }
+      if (!matched) {
+        const identified = identifyFieldFromQuestion(msg.content);
+        if (identified) counts[identified]++;
       }
     }
   }
@@ -129,9 +157,11 @@ function extractAndQuestion(complaintType, messages, existingData, lang = "en") 
       case "victim_name":
         updated.victim_name = lastUser.trim().replace(/\b\w/g, c => c.toUpperCase());
         break;
-      case "victim_contact":
-        updated.victim_contact = extractPhone(lastUser) || lastUser.trim();
+      case "victim_contact": {
+        const vcDigits = lastUser.replace(/\D/g, "");
+        updated.victim_contact = extractPhone(lastUser) || vcDigits.slice(0, 10) || lastUser.trim();
         break;
+      }
       case "incident_location":
         updated.incident_location = lastUser.trim();
         break;
@@ -144,9 +174,11 @@ function extractAndQuestion(complaintType, messages, existingData, lang = "en") 
       case "stolen_item":
         updated.stolen_item = lastUser.trim();
         break;
-      case "vehicle_number":
-        updated.vehicle_number = extractVehicle(lastUser) || lastUser.trim();
+      case "vehicle_number": {
+        const vnCleaned = lastUser.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 15);
+        updated.vehicle_number = extractVehicle(lastUser) || vnCleaned || lastUser.trim();
         break;
+      }
       case "evidence":
         updated.evidence = lastUser.trim();
         break;

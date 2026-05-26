@@ -1,5 +1,5 @@
 @echo off
-title AI FIR MVP - Setup & Runner
+title AI FIR MVP - Setup ^& Runner
 echo =================================================================
 echo           AI FIR Assistant - Local MVP Setup ^& Runner
 echo =================================================================
@@ -19,7 +19,7 @@ echo === Setting up Node.js Backend ===
 cd backend
 
 if not exist node_modules (
-    echo Installing Node packages (first time - takes ~30s)...
+    echo Installing Node packages, first time takes ~30s...
     call npm install
 )
 
@@ -33,7 +33,7 @@ echo === Setting up React Frontend ===
 cd frontend
 
 if not exist node_modules (
-    echo Installing Node packages (first time - takes ~30s)...
+    echo Installing Node packages, first time takes ~30s...
     call npm install
 )
 
