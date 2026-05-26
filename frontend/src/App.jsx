@@ -1,867 +1,1023 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Mic, MicOff, Send, Volume2, VolumeX, FileText, Check, Edit, Printer,
-  Home, History, User, Phone, MapPin, Calendar, AlertTriangle, Cpu,
-  DollarSign, UserX, EyeOff, Lock, ShieldCheck, ArrowRight,
-  ChevronRight, ShieldAlert, Loader, LogIn, LogOut, Eye
+  ShieldAlert, Mic, MicOff, Volume2, VolumeX, FileText, Edit, Printer,
+  Home, User, Phone, MapPin, Calendar, AlertTriangle, Cpu,
+  UserX, EyeOff, ShieldCheck, ArrowRight, Check, Loader,
+  Car, Package, Languages
 } from "lucide-react";
-
 import { WebSpeechRecognition, WebSpeechSynthesis } from "./utils/speech";
 import AudioVisualizer from "./components/AudioVisualizer";
-import { registerUser, loginUser } from "./utils/userStore";
-import { t } from "./utils/translations";
+import { detectLanguage, GREETING, LANG_NAMES, LANG_TTS } from "./utils/language";
+import { downloadFIR } from "./utils/pdf";
 
-const API_BASE = "http://localhost:8000";
+const API = "http://localhost:8000";
 
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || err.detail || "Request failed");
+  }
+  return res.json();
+}
+
+// ─── Constants ───────────────────────────────────────────
+const EMPTY_FIR = {
+  victim_name: "", victim_contact: "", incident_date_time: "",
+  incident_location: "", suspect_details: "", stolen_item: "",
+  vehicle_number: "", evidence: "", description: ""
+};
+
+const COMPLAINT_TYPES = [
+  { name: "Theft / Burglary",          icon: Package,  color: "#3b82f6" },
+  { name: "Physical Assault / Threat", icon: AlertTriangle, color: "#f59e0b" },
+  { name: "Harassment / Stalking",     icon: EyeOff,   color: "#ec4899" },
+  { name: "Cyber Crime / Fraud",       icon: Cpu,      color: "#10b981" },
+  { name: "Missing Person",            icon: UserX,    color: "#a855f7" },
+  { name: "Vehicle Theft / Accident",  icon: Car,      color: "#f97316" },
+  { name: "General / Other",           icon: FileText, color: "#64748b" },
+];
+
+const EXTRACTION_FIELDS = [
+  { key: "victim_name",        label: "Name",              icon: User,     span: 1 },
+  { key: "victim_contact",     label: "Contact",           icon: Phone,    span: 1 },
+  { key: "incident_location",  label: "Location",          icon: MapPin,   span: 1 },
+  { key: "incident_date_time", label: "Date / Time",       icon: Calendar, span: 1 },
+  { key: "suspect_details",    label: "Suspect",           icon: UserX,    span: 2 },
+  { key: "stolen_item",        label: "Stolen Item",       icon: Package,  span: 1 },
+  { key: "vehicle_number",     label: "Vehicle No.",       icon: Car,      span: 1 },
+  { key: "evidence",           label: "Evidence",          icon: EyeOff,   span: 2 },
+];
+
+const MIC_STATE = { IDLE: "idle", LISTENING: "listening", SPEAKING: "speaking", PROCESSING: "processing" };
+
+// ─── Client-side extraction helpers ────────────────────────
+function extractPhone(t) {
+  const wordMap = { zero:"0", one:"1", two:"2", three:"3", four:"4", five:"5", six:"6", seven:"7", eight:"8", nine:"9", oh:"0" };
+  let c = t.toLowerCase();
+  for (const [w, d] of Object.entries(wordMap)) c = c.replace(new RegExp(`\\b${w}\\b`, "g"), d);
+  const digits = c.replace(/\D/g, "");
+  const m10 = digits.match(/\d{10}/);
+  return m10 ? m10[0] : null;
+}
+
+function extractVehicle(t) {
+  const m = t.match(/\b[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{1,4}\b/i);
+  return m ? m[0].toUpperCase() : null;
+}
+
+function extractName(t) {
+  const m = t.match(/(?:my name is|i am|this is|name is)\s+([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)*)/i);
+  return m ? m[1].trim() : null;
+}
+
+function extractLocation(t) {
+  const m = t.match(/(?:at|in|near|outside|happened at|occurred at|place is)\s+([A-Za-z0-9][A-Za-z0-9\s,]{3,60}?)\s*(?:\.|,|yesterday|today|last|this morning|this evening|at\s+\d|$)/i);
+  return m ? m[1].trim() : null;
+}
+
+function extractDateTime(t) {
+  const m = t.match(/(?:yesterday|today|last night|this morning|this evening|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{1,2}:\d{2}\s*(?:am|pm)?)/i);
+  return m ? m[0].trim() : null;
+}
+
+function extractSuspect(t) {
+  const m = t.match(/(?:suspect|thief|attacker)\s+(?:was|wore|had|is)\s+([^.]{5,80})/i);
+  return m ? m[0].trim() : null;
+}
+
+function extractStolenItem(t) {
+  const m = t.match(/(?:stole|stolen|took|taken|robbe?d|snatched?)\s+(?:my\s+)?([^.]{3,60})/i);
+  return m ? m[1].trim() : null;
+}
+
+function extractEvidence(t) {
+  const m = t.match(/(?:cctv|camera|witness|video|photo|recording|evidence)[^.\n]{0,60}/i);
+  return m ? m[0].trim() : null;
+}
+
+// ─── Client-side fallback ─────────────────────────────────
+const CLIENT_QUESTIONS = {
+  en: [
+    ["victim_name",        "To register your complaint, could you please tell me your full name?"],
+    ["victim_contact",     "What is your 10-digit contact number?"],
+    ["incident_location",  "Where exactly did this incident take place?"],
+    ["incident_date_time", "What was the date and approximate time of the incident?"],
+    ["suspect_details",    "Can you describe the suspect or attacker?"],
+    ["stolen_item",        "What items were stolen or taken? Describe them."],
+    ["vehicle_number",     "What is the vehicle number involved?"],
+    ["evidence",           "Is there any CCTV, witnesses, or evidence available?"],
+  ],
+  hi: [
+    ["victim_name",        "अपनी शिकायत दर्ज कराने के लिए, कृपया मुझे अपना पूरा नाम बताएं?"],
+    ["victim_contact",     "आपका 10 अंकों का संपर्क नंबर क्या है?"],
+    ["incident_location",  "घटना कहां हुई? कृपया स्थान या पता बताएं।"],
+    ["incident_date_time", "यह घटना कब हुई? तारीख और समय बताएं।"],
+    ["suspect_details",    "क्या आप संदिग्ध का वर्णन कर सकते हैं?"],
+    ["stolen_item",        "क्या सामान चोरी हुआ? उनका वर्णन करें।"],
+    ["vehicle_number",     "वाहन नंबर क्या है?"],
+    ["evidence",           "क्या कोई सीसीटीवी या गवाह है?"],
+  ],
+  te: [
+    ["victim_name",        "మీ ఫిర్యాదును నమోదు చేయడానికి, దయచేసి మీ పూర్తి పేరు చెప్పగలరా?"],
+    ["victim_contact",     "మీ 10 అంకెల సంప్రదింపు నంబర్ ఏమిటి?"],
+    ["incident_location",  "సంఘటన ఎక్కడ జరిగింది? స్థలం లేదా చిరునామా ఇవ్వండి."],
+    ["incident_date_time", "ఇది ఎప్పుడు జరిగింది? తేదీ మరియు సమయం చెప్పండి."],
+    ["suspect_details",    "మీరు నిందితుడిని వివరించగలరా?"],
+    ["stolen_item",        "ఏ వస్తువులు చోరీ అయ్యాయి? వాటిని వివరించండి."],
+    ["vehicle_number",     "వాహన నంబర్ ఏమిటి?"],
+    ["evidence",           "సీసీటీవీ లేదా సాక్షులు ఉన్నారా?"],
+  ],
+};
+
+function identifyAskedField(lastQ) {
+  if (!lastQ) return null;
+  const prefixLen = 25;
+  for (const [, qlist] of Object.entries(CLIENT_QUESTIONS)) {
+    for (const [field, qText] of qlist) {
+      const prefix = qText.toLowerCase().slice(0, prefixLen);
+      if (lastQ.includes(prefix)) return field;
+    }
+  }
+  return null;
+}
+
+function clientSideProcess(text, existing, history, turn, cType, sessionLang) {
+  const updated = { ...existing };
+  const userMsgs = [...history.filter(m => m.role === "user").map(m => m.content), text];
+  const full = userMsgs.join(" ");
+
+  const lang = sessionLang || detectLanguage(text);
+  const allFields = ["victim_name","victim_contact","incident_location","incident_date_time","suspect_details","stolen_item","vehicle_number","evidence"];
+
+  const lastBot = [...history].reverse().find(m => m.role === "assistant");
+  const lastQ = lastBot?.content?.toLowerCase() || "";
+
+  // Keyword-based extraction from last question (English keywords)
+  if (lastQ.includes("name"))       updated.victim_name        ||= text.trim().replace(/\b\w/g, c => c.toUpperCase());
+  if (lastQ.includes("contact") || lastQ.includes("phone") || lastQ.includes("number") || lastQ.includes("mobile"))
+    updated.victim_contact ||= extractPhone(text) || text.replace(/\D/g, "").slice(0, 10) || text.trim();
+  if (lastQ.includes("where exactly") || lastQ.includes("address") || lastQ.includes("take place"))
+    updated.incident_location ||= text.trim();
+  if (lastQ.includes("date and") || lastQ.includes("what was the date"))
+    updated.incident_date_time ||= text.trim();
+  if (lastQ.includes("suspect") || lastQ.includes("thief") || lastQ.includes("attacker"))
+    updated.suspect_details ||= text.trim();
+  if (lastQ.includes("stolen") || lastQ.includes("items") || lastQ.includes("taken"))
+    updated.stolen_item ||= text.trim();
+  if (lastQ.includes("vehicle") || lastQ.includes("car") || lastQ.includes("bike"))
+    updated.vehicle_number ||= extractVehicle(text) || text.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 15) || text.trim();
+  if (lastQ.includes("evidence") || lastQ.includes("cctv") || lastQ.includes("witness"))
+    updated.evidence ||= text.trim();
+
+  // Deep regex extraction from all user speech (English patterns)
+  if (!updated.victim_name) {
+    const n = extractName(full);
+    if (n) updated.victim_name = n.replace(/\b\w/g, c => c.toUpperCase());
+  }
+  if (!updated.victim_contact) {
+    const p = extractPhone(full);
+    if (p) updated.victim_contact = p;
+  }
+  if (!updated.victim_contact && text.trim()) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i]?.role === "assistant" && history[i].content.toLowerCase().match(/(contact|phone|number|mobile)/)) {
+        updated.victim_contact = text.trim();
+        break;
+      }
+    }
+  }
+  if (!updated.incident_location) {
+    const l = extractLocation(full);
+    if (l) updated.incident_location = l;
+  }
+  if (!updated.incident_date_time) {
+    const d = extractDateTime(full);
+    if (d) updated.incident_date_time = d;
+  }
+  if (!updated.suspect_details) {
+    const s = extractSuspect(full);
+    if (s) updated.suspect_details = s;
+  }
+  if (!updated.stolen_item) {
+    const s = extractStolenItem(full);
+    if (s) updated.stolen_item = s;
+  }
+  if (!updated.vehicle_number) {
+    const v = extractVehicle(full);
+    if (v) updated.vehicle_number = v;
+  }
+  if (!updated.evidence) {
+    const e = extractEvidence(full);
+    if (e) updated.evidence = e;
+  }
+
+  // Fallback for non-English: nothing was extracted by keyword/regex,
+  // so accept the user's response as the answer for whichever field was just asked
+  const asked = identifyAskedField(lastQ);
+  if (asked && !updated[asked]) {
+    if (asked === "victim_contact") {
+      const digits = text.replace(/\D/g, "");
+      updated[asked] = extractPhone(text) || digits.slice(0, 10) || text.trim();
+    } else if (asked === "vehicle_number") {
+      const cleaned = text.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 15);
+      updated[asked] = cleaned || text.trim();
+    } else {
+      updated[asked] = text.trim();
+    }
+  }
+
+  updated.description = full.slice(0, 1000);
+
+  const done = turn >= 8 || allFields.every(f => updated[f]);
+
+  const qs = CLIENT_QUESTIONS[lang] || CLIENT_QUESTIONS.en;
+  const nextQ = done
+    ? (lang === "hi" ? "धन्यवाद। आपका FIR फॉर्म तैयार है। कृपया 'Review Form' पर टैप करें।" :
+       lang === "te" ? "ధన్యవాదాలు. మీ FIR ఫారమ్ సిద్ధంగా ఉంది. దయచేసి 'Review Form' నొక్కండి." :
+       "Thank you. Your FIR form is ready. Please tap 'Review Form' to verify.")
+    : (qs.find(([f]) => !updated[f])?.[1] ?? "Any additional details?");
+
+  return { reply: nextQ, extracted: updated, done, lang };
+}
+
+// ══════════════════════════════════════════════════════════════
+// APP
+// ══════════════════════════════════════════════════════════════
 export default function App() {
-  const [view, setView] = useState("login");
+  // ── Navigation ───────────────────────────────────────────
+  const [view, setView] = useState("welcome");
 
-  const [sysStatus, setSysStatus] = useState({
-    backend_running: false, database_connected: false,
-    ollama_connected: false, ollama_model: null, standalone_mode: false
-  });
+  // ── System ───────────────────────────────────────────────
+  const [sysStatus, setSysStatus] = useState({ backend: false });
 
-  const [sessionId, setSessionId] = useState("");
-  const [complaintType, setComplaintType] = useState("");
-  const [currentTurn, setCurrentTurn] = useState(0);
-  const [transcript, setTranscript] = useState([]);
-  const [extractedData, setExtractedData] = useState({
-    victim_name: "", victim_contact: "", incident_date_time: "",
-    incident_location: "", suspect_details: "", evidence: "", witness: "", description: ""
-  });
+  // ── Language ─────────────────────────────────────────────
+  const [speechLang, setSpeechLang] = useState("en-IN");
+  const [detectedLang, setDetectedLang] = useState("en");
 
-  const [isRecording, setIsRecording] = useState(false);
-  const [recognitionError, setRecognitionError] = useState("");
-  const [inputText, setInputText] = useState("");
-  const [isMuted, setIsMuted] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [savedFirs, setSavedFirs] = useState([]);
+  // ── Session ──────────────────────────────────────────────
+  const [sessionId,      setSessionId]      = useState("");
+  const [complaintType,  setComplaintType]  = useState("");
+  const [transcript,     setTranscript]     = useState([]);
+  const [extractedData,  setExtractedData]  = useState({ ...EMPTY_FIR });
+  const [chatFinished,   setChatFinished]   = useState(false);
+  const [currentTurn,    setCurrentTurn]    = useState(0);
+
+  // ── Voice ────────────────────────────────────────────────
+  const [micState,       setMicState]       = useState(MIC_STATE.IDLE);
+  const [liveText,       setLiveText]       = useState("");
+  const [isMuted,        setIsMuted]        = useState(false);
+  const [voiceError,     setVoiceError]     = useState("");
+
+  // ── History / Preview ────────────────────────────────────
+  const [savedFirs,  setSavedFirs]  = useState([]);
   const [selectedFir, setSelectedFir] = useState(null);
 
-  const [authToken, setAuthToken] = useState(() => localStorage.getItem("auth_token") || "");
-  const [authUser, setAuthUser] = useState(() => {
-    const stored = localStorage.getItem("auth_user");
-    return stored ? JSON.parse(stored) : null;
-  });
-  const [authView, setAuthView] = useState("register");
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authName, setAuthName] = useState("");
-  const [authPhone, setAuthPhone] = useState("");
-  const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const lang = "en";
-  const isAuthenticated = !!authToken && !!authUser;
+  // ── Refs ─────────────────────────────────────────────────
+  const sttRef           = useRef(null);
+  const ttsRef           = useRef(null);
+  const chatEndRef       = useRef(null);
+  const autoMicTimer     = useRef(null);
+  const micPermitted     = useRef(false);
+  const startListenRef   = useRef(null);
+  const sendMsgRef       = useRef(null);
+  const extractedDataRef = useRef({ ...EMPTY_FIR });
+  const transcriptRef    = useRef([]);
+  const currentTurnRef   = useRef(0);
 
-  const extractionFields = [
-    { label: "Victim Name", key: "victim_name", icon: User },
-    { label: "Contact Details", key: "victim_contact", icon: Phone },
-    { label: "Incident Location", key: "incident_location", icon: MapPin },
-    { label: "Date & Time", key: "incident_date_time", icon: Calendar },
-    { label: "Suspect Details", key: "suspect_details", icon: UserX },
-    { label: "Evidence", key: "evidence", icon: EyeOff },
-    { label: "Witnesses", key: "witness", icon: FileText }
-  ];
-
-  const speechRecognitionRef = useRef(null);
-  const speechSynthesisRef = useRef(null);
-  const chatBottomRef = useRef(null);
-
+  // ── Init ─────────────────────────────────────────────────
   useEffect(() => {
-    speechRecognitionRef.current = new WebSpeechRecognition();
-    speechSynthesisRef.current = new WebSpeechSynthesis();
-    const fetchStatus = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/status`);
-        if (res.ok) {
-          const data = await res.json();
-          setSysStatus({ backend_running: true, database_connected: data.database_connected, ollama_connected: data.ollama_connected, ollama_model: data.ollama_model, standalone_mode: false });
-        } else throw new Error();
-      } catch { setSysStatus({ backend_running: false, database_connected: true, ollama_connected: false, ollama_model: null, standalone_mode: true }); }
-    };
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 10000);
-    return () => clearInterval(interval);
+    sttRef.current = new WebSpeechRecognition();
+    ttsRef.current = new WebSpeechSynthesis();
+    checkStatus();
+    const iv = setInterval(checkStatus, 12000);
+    return () => { clearInterval(iv); clearAutoMic(); };
   }, []);
 
   useEffect(() => {
-    if (chatBottomRef.current) chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
 
+  // ── Status check ─────────────────────────────────────────
+  const checkStatus = async () => {
+    try {
+      const d = await apiFetch("/api/status");
+      setSysStatus({ backend: true });
+    } catch { setSysStatus({ backend: false }); }
+  };
+
+  // ── Sync STT/TTS language when speechLang changes ────────
   useEffect(() => {
-    if (transcript.length > 0 && !isMuted) {
-      const lastMsg = transcript[transcript.length - 1];
-      if (lastMsg.role === "assistant") speechSynthesisRef.current.speak(lastMsg.content);
-    }
-  }, [transcript, isMuted]);
+    sttRef.current?.setLanguage(speechLang);
+    ttsRef.current?.setLanguage(speechLang);
+  }, [speechLang]);
 
-  const handleRegister = async (e) => {
-    e.preventDefault(); setAuthError(""); setAuthLoading(true);
+  // Keep refs in sync with state for stale-closure-safe access
+  useEffect(() => { extractedDataRef.current = extractedData; }, [extractedData]);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
+  useEffect(() => { currentTurnRef.current = currentTurn; }, [currentTurn]);
+
+  // ── Speak then auto-start mic ────────────────────────────
+  const speakAndListen = useCallback((text, lang) => {
+    if (isMuted || chatFinished) return;
+    const ttsLang = LANG_TTS[lang] || speechLang;
+    sttRef.current?.setLanguage(ttsLang);
+    ttsRef.current?.setLanguage(ttsLang);
+    setMicState(MIC_STATE.SPEAKING);
+    ttsRef.current.speak(
+      text,
+      () => setMicState(MIC_STATE.SPEAKING),
+      () => {
+        setMicState(MIC_STATE.IDLE);
+        clearAutoMic();
+        autoMicTimer.current = setTimeout(() => {
+          if (!chatFinished) startListenRef.current?.();
+        }, 700);
+      },
+      () => setMicState(MIC_STATE.IDLE)
+    );
+  }, [isMuted, chatFinished, speechLang]);
+
+  const clearAutoMic = () => {
+    if (autoMicTimer.current) { clearTimeout(autoMicTimer.current); autoMicTimer.current = null; }
+  };
+
+  // ── Microphone permission ────────────────────────────────
+  const requestMicPermission = useCallback(async () => {
+    if (micPermitted.current) return true;
     try {
-      const res = await fetch(`${API_BASE}/api/auth/register`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ full_name: authName, email: authEmail, phone: authPhone, password: authPassword })
-      });
-      const data = await res.json();
-      if (!res.ok) { setAuthError(data.detail || "Registration failed"); return; }
-      localStorage.setItem("auth_token", data.access_token);
-      localStorage.setItem("auth_user", JSON.stringify(data.user));
-      setAuthToken(data.access_token); setAuthUser(data.user); setView("welcome");
-    } catch {
-      const result = registerUser(authName, authEmail, authPhone, authPassword);
-      if (!result.ok) { setAuthError(result.error); return; }
-      localStorage.setItem("auth_token", result.access_token);
-      localStorage.setItem("auth_user", JSON.stringify(result.user));
-      setAuthToken(result.access_token); setAuthUser(result.user); setView("welcome");
-    } finally { setAuthLoading(false); }
-  };
-
-  const handleLogin = async (e) => {
-    e.preventDefault(); setAuthError(""); setAuthLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: authEmail, password: authPassword })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const result = loginUser(authEmail, authPassword);
-        if (result.ok) {
-          localStorage.setItem("auth_token", result.access_token);
-          localStorage.setItem("auth_user", JSON.stringify(result.user));
-          setAuthToken(result.access_token); setAuthUser(result.user); setView("welcome");
-          return;
-        }
-        setAuthError(result.error); return;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      micPermitted.current = true;
+      return true;
+    } catch (err) {
+      console.error("Mic permission error:", err.name, err.message);
+      const name = err.name || "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setVoiceError("Microphone access denied. Click the 🔒 icon in the address bar, enable Microphone, then reload.");
+      } else if (name === "NotFoundError") {
+        setVoiceError("No microphone found. Connect a mic or check your input device settings.");
+      } else if (name === "NotReadableError") {
+        setVoiceError("Microphone is busy (another app may be using it). Close other apps and retry.");
+      } else {
+        setVoiceError(`Microphone error: ${err.message}. Tap mic to retry.`);
       }
-      localStorage.setItem("auth_token", data.access_token);
-      localStorage.setItem("auth_user", JSON.stringify(data.user));
-      setAuthToken(data.access_token); setAuthUser(data.user); setView("welcome");
-    } catch {
-      const result = loginUser(authEmail, authPassword);
-      if (result.ok) {
-        localStorage.setItem("auth_token", result.access_token);
-        localStorage.setItem("auth_user", JSON.stringify(result.user));
-        setAuthToken(result.access_token); setAuthUser(result.user); setView("welcome");
-        return;
-      }
-      setAuthError(result.error);
+      return false;
     }
-    finally { setAuthLoading(false); }
+  }, []);
+
+  // ── Speech Recognition ───────────────────────────────────
+  const startListening = useCallback(async () => {
+    if (!sttRef.current?.supported) {
+      setVoiceError("Speech Recognition not supported. Use Chrome or Edge."); return;
+    }
+    const hasPerm = await requestMicPermission();
+    if (!hasPerm) {
+      setMicState(MIC_STATE.IDLE);
+      return;
+    }
+    setVoiceError(""); setLiveText(""); setMicState(MIC_STATE.LISTENING);
+
+    sttRef.current.start(
+      (text) => {
+        setLiveText(text); setMicState(MIC_STATE.PROCESSING); sendMsgRef.current?.(text);
+      },
+      (err) => {
+        setMicState(MIC_STATE.IDLE);
+        if (err === "not-allowed") micPermitted.current = false;
+        setVoiceError(err === "not-allowed"
+          ? "Microphone blocked. Check browser site permissions (🔒 → Microphone → Allow)."
+          : `Microphone error: ${err}. Tap mic to retry.`);
+      },
+      () => setMicState(MIC_STATE.IDLE)
+    );
+  }, [requestMicPermission]);
+
+  // Keep ref in sync so timers always call the latest version
+  startListenRef.current = startListening;
+
+  const stopListening = () => { sttRef.current?.stop(); setMicState(MIC_STATE.IDLE); clearAutoMic(); };
+
+  const toggleMic = () => {
+    if (micState === MIC_STATE.LISTENING) stopListening();
+    else if (micState === MIC_STATE.IDLE) { ttsRef.current?.stop(); startListening(); }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("auth_token"); localStorage.removeItem("auth_user");
-    setAuthToken(""); setAuthUser(null); setView("login"); speechSynthesisRef.current.stop();
+  // ── Language toggle ──────────────────────────────────────
+  const cycleLanguage = () => {
+    const langs = ["en-IN", "hi-IN", "te-IN"];
+    const idx = langs.indexOf(speechLang);
+    const next = langs[(idx + 1) % langs.length];
+    setSpeechLang(next);
+    sttRef.current?.setLanguage(next);
+    ttsRef.current?.setLanguage(next);
   };
 
-  const startNewSession = async (type) => {
-    const sId = "session_" + crypto.randomUUID();
-    setSessionId(sId); setComplaintType(type); setCurrentTurn(0);
-    setIsRecording(false); setTranscript([]);
-    setExtractedData({ victim_name: "", victim_contact: "", incident_date_time: "", incident_location: "", suspect_details: "", evidence: "", witness: "", description: "" });
-    setView("chat"); setIsProcessing(true);
-    if (sysStatus.backend_running && !sysStatus.standalone_mode) {
+  // ── Send message ─────────────────────────────────────────
+  const sendMessage = async (text) => {
+    if (!text?.trim()) { setMicState(MIC_STATE.IDLE); return; }
+
+    // Use refs to always read the latest state (avoids stale closure bugs)
+    const curExtracted = extractedDataRef.current;
+    const curTranscript = transcriptRef.current;
+    const curTurn = currentTurnRef.current;
+
+    setTranscript(prev => {
+      const next = [...prev, { role: "user", content: text }];
+      transcriptRef.current = next;
+      return next;
+    });
+
+    const userLang = detectLanguage(text);
+    // Use the user's explicit language selection as the session language
+    const sessionLang = speechLang === "en-IN" ? "en" : speechLang === "hi-IN" ? "hi" : "te";
+    setDetectedLang(sessionLang);
+
+    let reply, data = null;
+
+    if (sysStatus.backend) {
       try {
-        const res = await fetch(`${API_BASE}/api/chat/message`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sId, complaint_type: type, user_id: authUser?.id || null, language: lang })
+        data = await apiFetch("/api/chat/message", {
+          method: "POST",
+          body: JSON.stringify({
+            session_id: sessionId,
+            message: text,
+            complaint_type: complaintType,
+            language: sessionLang,
+          }),
         });
-        if (res.ok) { const data = await res.json(); setTranscript([{ role: "assistant", content: data.message }]); }
-      } catch (err) { console.error(err); startSessionClient(type); }
-      finally { setIsProcessing(false); }
-    } else { startSessionClient(type); setIsProcessing(false); }
+      } catch {
+        setSysStatus({ backend: false });
+      }
+    }
+
+    if (!data) {
+      const result = clientSideProcess(text, curExtracted, curTranscript, curTurn, complaintType, sessionLang);
+      reply = result.reply;
+      data = { extracted_data: result.extracted, finished: result.done, language: result.lang };
+      extractedDataRef.current = result.extracted;
+      setExtractedData(result.extracted);
+      currentTurnRef.current = curTurn + 1;
+      setCurrentTurn(curTurn + 1);
+      if (result.done) setChatFinished(true);
+      setDetectedLang(result.lang);
+    } else {
+      reply = data.message;
+      extractedDataRef.current = data.extracted_data;
+      setExtractedData(data.extracted_data);
+      currentTurnRef.current = data.current_turn;
+      setCurrentTurn(data.current_turn);
+      if (data.finished) setChatFinished(true);
+      if (data.language) setDetectedLang(data.language);
+    }
+
+    setTranscript(prev => {
+      const next = [...prev, { role: "assistant", content: reply }];
+      transcriptRef.current = next;
+      return next;
+    });
+    setMicState(MIC_STATE.IDLE);
+
+    const replyLang = data.language || userLang;
+    if (!data.finished) {
+      speakAndListen(reply, replyLang);
+    } else {
+      ttsRef.current?.speak(reply);
+    }
   };
 
-  const startSessionClient = (type) => {
-    const greeting = `Hello, I am your digital police assistant. I will help you file a First Information Report (FIR) for the '${type}' incident. Please describe what happened in your own words, and I will extract the details.`;
+  sendMsgRef.current = sendMessage;
+
+  // ── Start Session ────────────────────────────────────────
+  const startSession = async (type) => {
+    const sid = `session_${Date.now()}`;
+    setSessionId(sid); setComplaintType(type);
+    setTranscript([]); setExtractedData({ ...EMPTY_FIR });
+    setChatFinished(false); setCurrentTurn(0);
+    setLiveText(""); setVoiceError(""); setView("chat");
+
+    const langCode = speechLang === "en-IN" ? "en" : speechLang === "hi-IN" ? "hi" : "te";
+    let greeting, respLang = langCode;
+    const typeLabel = type.toLowerCase();
+    const defaultGreeting = (GREETING[langCode] || GREETING.en).replace(/\{type\}/g, typeLabel);
+    try {
+      if (sysStatus.backend) {
+        const d = await apiFetch("/api/chat/message", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sid, complaint_type: type, language: langCode }),
+        });
+        greeting = d.message || defaultGreeting;
+        if (d.language) respLang = d.language;
+      } else {
+        greeting = defaultGreeting;
+      }
+    } catch {
+      greeting = defaultGreeting;
+    }
+
     setTranscript([{ role: "assistant", content: greeting }]);
+    setTimeout(() => speakAndListen(greeting, respLang), 500);
   };
 
-  function extractName(text) {
-    const patterns = [
-      /(?:my name is|i am|this is)\s+([A-Za-z]+(?:[\s'][A-Za-z]+){0,3})/i,
-      /(?:name is|myself)\s+([A-Za-z]+(?:[\s'][A-Za-z]+){0,3})/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) return m[1].trim();
-    }
-    return null;
-  }
-
-  function extractPhone(text) {
-    const patterns = [
-      /(?:\+91[\s-]?)?(\d{10})(?:\s|$|\.)/,
-      /(?:phone|contact|number|reach|call|mobile|whatsapp)(?:\s*(?:number|no|is|:))?\s*[:]?\s*((?:\+91[\s-]?)?\d{5,}[\s-]?\d{5,})/i,
-      /(\d{5}[\s-]\d{5})/
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) return m[1].replace(/[\s-]+/g, "");
-    }
-    return null;
-  }
-
-  function extractLocation(text) {
-    const patterns = [
-      /(?:at|in|near|outside|inside|from)\s+([A-Za-z0-9\s,.'-]{4,40})(?:\s+(?:yesterday|today|on|at|around|when|i\b|the\b|and|with|$))/i,
-      /(?:place of occurrence|incident (?:location|place)|happened at|occurred at|took place)\s*(?::|at|in|on)?\s*([A-Za-z0-9\s,.'-]{4,40})/i,
-      /(?:address is|location is)\s*[:]?\s*([A-Za-z0-9\s,.'-]{4,40})/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) return m[1].trim();
-    }
-    return null;
-  }
-
-  function extractDateTime(text) {
-    const patterns = [
-      /(?:yesterday|today|last night|last week|last month|day before yesterday)/i,
-      /(?:on\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*\d{0,4})/i,
-      /(?:on\s+)?(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})/,
-      /\b(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\b/,
-      /(?:at\s+)?(\d{1,2}\s*(?:AM|PM|am|pm))/i,
-      /(?:morning|evening|afternoon|night|midnight|noon|dawn|dusk)/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) return m[0] || m[1];
-    }
-    return null;
-  }
-
-  function extractSuspect(text) {
-    const patterns = [
-      /(?:suspect|accused|person|man|woman|guy|thief|robber|attacker)(?:\s+(?:was|is|wearing|had|wore|appeared|looked|name))?\s+([^.?!]{5,60})/i,
-      /(?:he|she)\s+(?:was|is|wore|wearing|had|looked|appeared)\s+([^.?!]{4,50})/i,
-      /(?:description of|describe)\s+(?:the\s+)?(?:suspect|person|accused)\s*(?::|is|was)?\s*([^.?!]{5,50})/i,
-      /(?:suspect details|suspect description)\s*(?::|is)?\s*([^.?!]{5,60})/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) {
-        let val = m[1].trim();
-        if (val.length > 4) return val;
-      }
-    }
-    return null;
-  }
-
-  function extractEvidence(text) {
-    const patterns = [
-      /(?:there is|there are|i have|we have|there was)\s+([^.?!]{5,80})/i,
-      /(?:evidence|proof|cctv|camera|recording|video|photo|picture|footage|document|screenshot)\s*(?::|is|was)?\s*([^.?!]{5,80})/i,
-      /(?:i have|have a|has a)\s+(?:video|photo|picture|recording|cctv|camera|evidence|proof|document|screenshot)\s+([^.?!]{5,80})/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) {
-        let val = (m[1] || m[0]).trim();
-        if (val.length > 4) return val;
-      }
-    }
-    return null;
-  }
-
-  function extractWitness(text) {
-    const patterns = [
-      /(?:witness(?:es)?)\s*(?::|are|is|was|name|names)?\s*([A-Za-z\s,]{4,60})/i,
-      /(?:there (?:is|are|was|were)\s+(?:a\s+)?witness(?:\s+(?:named|called|by\s+the\s+name\s+))?)\s+([A-Za-z\s,]{4,50})/i,
-      /(?:witness saw|witness told|witness said|witness gave|witness name|witnesses are)\s+([^.?!]{5,60})/i,
-      /(\d+\s*(?:people|persons?|men|women|neighbors?|bystanders?|passersby)\s+(?:saw|witnessed|watched|observed|saw everything))/i
-    ];
-    for (const p of patterns) {
-      const m = text.match(p);
-      if (m) {
-        let val = (m[1] || m[0]).trim();
-        if (val.length > 4) return val;
-      }
-    }
-    return null;
-  }
-
-  const processMessageClient = (userText) => {
-    const history = [...transcript, { role: "user", content: userText }];
-    setTranscript(history);
-    const updated = { ...extractedData };
-    const lastUser = userText;
-
-    // Extract only the field that was just asked about (sequential chain)
-    if (!updated.victim_name) {
-      const v = extractName(lastUser);
-      if (v) updated.victim_name = v;
-      else if (lastUser.length >= 2) updated.victim_name = lastUser.trim();
-    } else if (!updated.victim_contact) {
-      const v = extractPhone(lastUser);
-      if (v) updated.victim_contact = v;
-      else if (lastUser.length >= 2) updated.victim_contact = lastUser.trim();
-    } else if (!updated.incident_location) {
-      const v = extractLocation(lastUser);
-      if (v) updated.incident_location = v;
-      else if (lastUser.length >= 3) updated.incident_location = lastUser.trim().replace(/[.,;]+$/, "");
-    } else if (!updated.incident_date_time) {
-      const v = extractDateTime(lastUser);
-      if (v) updated.incident_date_time = v;
-      else if (lastUser.length >= 3) updated.incident_date_time = lastUser.trim();
-    } else if (!updated.suspect_details && ["Theft","Burglary","Assault","Harassment","Cyber Crime","Missing Person"].includes(complaintType)) {
-      const v = extractSuspect(lastUser);
-      if (v) updated.suspect_details = v;
-      else if (lastUser.length >= 3) updated.suspect_details = lastUser.trim().replace(/[.!?]+$/, "");
-    } else if (!updated.evidence) {
-      const v = extractEvidence(lastUser);
-      if (v) updated.evidence = v;
-      else if (lastUser.length >= 3) updated.evidence = lastUser.trim().replace(/[.!?]+$/, "");
-    } else if (!updated.witness) {
-      if (lastUser.length >= 3) updated.witness = lastUser.trim().replace(/[.!?]+$/, "");
-    } else if (!updated.description) {
-      if (lastUser.length >= 3) updated.description = lastUser.trim();
-    }
-
-    setExtractedData(updated);
-    const nextTurn = currentTurn + 1;
-    setCurrentTurn(nextTurn);
-    let nextQ = "";
-    if (!updated.victim_name) nextQ = t("ask.name", lang);
-    else if (!updated.victim_contact) nextQ = t("ask.contact", lang, { name: updated.victim_name });
-    else if (!updated.incident_location) nextQ = t("ask.location", lang);
-    else if (!updated.incident_date_time) nextQ = t("ask.datetime", lang);
-    else if (!updated.suspect_details && ["Theft","Burglary","Assault","Harassment","Cyber Crime","Missing Person"].includes(complaintType)) nextQ = t("ask.suspect", lang);
-    else if (!updated.evidence) nextQ = t("ask.evidence", lang);
-    else if (!updated.witness) nextQ = t("ask.witness", lang);
-    else if (!updated.description) nextQ = t("ask.description", lang);
-    else nextQ = t("ask.done", lang);
-    setTimeout(() => setTranscript(prev => [...prev, { role: "assistant", content: nextQ }]), 600);
-  };
-
-  const sendMessage = async (messageText) => {
-    if (!messageText.trim()) return;
-    setInputText(""); setRecognitionError(""); setIsProcessing(true);
-    speechSynthesisRef.current.stop();
-    if (sysStatus.backend_running && !sysStatus.standalone_mode) {
-      setTranscript(prev => [...prev, { role: "user", content: messageText }]);
-      try {
-        const res = await fetch(`${API_BASE}/api/chat/message`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: sessionId, message: messageText, language: lang })
-        });
-        if (res.ok) { const d = await res.json(); setTranscript(prev => [...prev, { role: "assistant", content: d.message }]); setExtractedData(d.extracted_data); setCurrentTurn(d.current_turn); }
-        else throw new Error("Message failed");
-      } catch (err) { console.error(err); processMessageClient(messageText); }
-      finally { setIsProcessing(false); }
-    } else { processMessageClient(messageText); setIsProcessing(false); }
-  };
-
-  const toggleRecording = () => {
-    if (isRecording) { speechRecognitionRef.current.stop(); setIsRecording(false); }
-    else {
-      setRecognitionError(""); setIsRecording(true);
-      speechRecognitionRef.current.setLanguage("en-IN");
-      speechRecognitionRef.current.start(
-        (t) => { setIsRecording(false); sendMessage(t); },
-        (e) => { setIsRecording(false); setRecognitionError(`Speech: ${e}`); },
-        () => setIsRecording(false)
-      );
-    }
-  };
-
+  // ── Save FIR ─────────────────────────────────────────────
   const saveFIR = async () => {
-    setIsProcessing(true);
     const report = {
-      complaint_type: complaintType, victim_name: extractedData.victim_name || "Unknown",
-      victim_contact: extractedData.victim_contact || "Unknown", incident_date_time: extractedData.incident_date_time || "Unknown",
-      incident_location: extractedData.incident_location || "Unknown", suspect_details: extractedData.suspect_details || "No details provided",
-      evidence: (extractedData.evidence || "") + (extractedData.witness ? ` | Witnesses: ${extractedData.witness}` : "") || "None specified",
-      description: extractedData.description || "No description provided",
-      status: "Submitted", transcript_json: JSON.stringify(transcript), user_id: authUser?.id || null
+      complaint_type: complaintType, ...extractedData,
+      status: "Submitted",
+      transcript_json: JSON.stringify(transcript),
+      language: detectedLang,
     };
-    if (sysStatus.backend_running && !sysStatus.standalone_mode) {
-      try {
-        const res = await fetch(`${API_BASE}/api/fir/save`, {
-          method: "POST", headers: { "Content-Type": "application/json", ...(authToken ? { "Authorization": `Bearer ${authToken}` } : {}) },
-          body: JSON.stringify(report)
-        });
-        if (res.ok) { setSelectedFir(await res.json()); setView("preview"); }
-      } catch (err) { console.error(err); saveFIRLocal(report); }
-      finally { setIsProcessing(false); }
-    } else { saveFIRLocal(report); setIsProcessing(false); }
+
+    try {
+      if (sysStatus.backend) {
+        const saved = await apiFetch("/api/fir/save", { method: "POST", body: JSON.stringify(report) });
+        setSelectedFir(saved);
+      } else {
+        const list = JSON.parse(localStorage.getItem("local_firs") || "[]");
+        const mock = { ...report, _id: String(Date.now()), createdAt: new Date().toISOString() };
+        list.push(mock);
+        localStorage.setItem("local_firs", JSON.stringify(list));
+        setSelectedFir(mock);
+      }
+      setView("preview");
+    } catch (err) { alert("Save failed: " + err.message); }
   };
 
-  const saveFIRLocal = (report) => {
-    const list = JSON.parse(localStorage.getItem("local_firs") || "[]");
-    const mr = { ...report, id: Date.now(), created_at: new Date().toISOString() };
-    list.push(mr); localStorage.setItem("local_firs", JSON.stringify(list));
-    setSelectedFir(mr); setView("preview");
-  };
-
-  const loadFIRHistory = async () => {
-    setIsProcessing(true);
-    if (sysStatus.backend_running && !sysStatus.standalone_mode) {
-      try { const res = await fetch(`${API_BASE}/api/fir/list`); if (res.ok) setSavedFirs(await res.json()); }
-      catch (err) { console.error(err); loadFIRHistoryLocal(); }
-      finally { setIsProcessing(false); }
-    } else { loadFIRHistoryLocal(); setIsProcessing(false); }
+  // ── Load History ─────────────────────────────────────────
+  const loadHistory = async () => {
+    try {
+      if (sysStatus.backend) {
+        setSavedFirs(await apiFetch("/api/fir/list"));
+      } else {
+        setSavedFirs(JSON.parse(localStorage.getItem("local_firs") || "[]"));
+      }
+    } catch { setSavedFirs(JSON.parse(localStorage.getItem("local_firs") || "[]")); }
     setView("history");
   };
 
-  const loadFIRHistoryLocal = () => setSavedFirs(JSON.parse(localStorage.getItem("local_firs") || "[]"));
-  const handlePrint = () => window.print();
-  const cancelSession = () => { speechSynthesisRef.current.stop(); setView("welcome"); };
-  const micState = isRecording ? "listening" : isProcessing ? "processing" : "idle";
-  const isBackendOnline = sysStatus.backend_running && !sysStatus.standalone_mode;
+  // ── Update language from chat language display ───────────
+  const langDisplay = LANG_NAMES[detectedLang] || "English";
+  const langCode = LANG_TTS[detectedLang] || "en-IN";
 
+  const micLabel = {
+    [MIC_STATE.IDLE]:       { text: "Tap to Speak",  cls: "gray"  },
+    [MIC_STATE.LISTENING]:  { text: "Listening...",   cls: "green" },
+    [MIC_STATE.SPEAKING]:   { text: "AI Speaking...", cls: "blue"  },
+    [MIC_STATE.PROCESSING]: { text: "Processing...",  cls: "blue"  },
+  }[micState];
+
+  // ─── RENDER ──────────────────────────────────────────────
   return (
     <div className="app-shell">
-      {/* ═══ HEADER ═══ */}
+      {/* ── Header ── */}
       <header className="app-header">
-        <div className="header-brand" onClick={() => isAuthenticated ? setView("welcome") : setView("login")}>
-          <div className="header-brand-icon"><ShieldAlert size={20} /></div>
+        <div className="header-brand" onClick={() => { ttsRef.current?.stop(); setView("welcome"); }}>
+          <div className="header-brand-icon"><ShieldAlert size={20} color="#fff" /></div>
           <div>
-            <h1>{t("app.title", lang)}</h1>
-            <p>{t("app.subtitle", lang)}</p>
+            <h1>AI FIR PORTAL</h1>
+            <p>PRIVACY-FIRST POLICE ASSISTANT</p>
           </div>
         </div>
+
         <div className="header-right">
-          {isAuthenticated && (
-            <div className="user-chip">
-              <div className="avatar">{authUser?.full_name?.charAt(0)?.toUpperCase() || "U"}</div>
-              <span>{authUser?.full_name || authUser?.email}</span>
-            </div>
-          )}
-          <span className={`status-badge ${sysStatus.standalone_mode ? "badge-warn" : isBackendOnline ? "badge-online" : "badge-offline"}`}>
+          <span className={`status-badge ${sysStatus.backend ? "badge-online" : "badge-offline"}`}>
             <span className="dot" />
-            {sysStatus.standalone_mode ? t("status.standalone", lang) : isBackendOnline ? t("status.api_online", lang) : t("status.api_offline", lang)}
+            {sysStatus.backend ? "API ONLINE" : "OFFLINE MODE"}
           </span>
-          <span className={`status-badge ${sysStatus.ollama_connected ? "badge-online" : "badge-warn"}`}>
-            <Cpu size={12} />
-            {sysStatus.ollama_connected ? t("status.ollama", lang) : t("status.no_llm", lang)}
+
+          <span className="status-badge badge-online">
+            <Languages size={10} /> {langDisplay}
           </span>
-          {isAuthenticated ? (
-            <>
-              <button className="btn btn-ghost" style={{ padding: "0.5rem 0.75rem" }} onClick={loadFIRHistory}>
-                <History size={15} /> {t("app.records", lang)}
-              </button>
-              <button className="btn btn-danger" style={{ padding: "0.5rem 0.75rem" }} onClick={handleLogout}>
-                <LogOut size={15} /> {t("app.logout", lang)}
-              </button>
-            </>
-          ) : (
-            <button className="btn btn-primary" style={{ padding: "0.5rem 0.75rem" }} onClick={() => setView("login")}>
-              <LogIn size={15} /> {t("app.login", lang)}
-            </button>
-          )}
+
+          <button className="btn btn-ghost" style={{ padding: "0.4rem 0.7rem" }} onClick={loadHistory}>
+            <FileText size={15} />
+          </button>
         </div>
       </header>
 
-      {/* ═══ STEP INDICATOR ═══ */}
-      {isAuthenticated && view !== "login" && view !== "chat" && (
-        <div className="step-indicator">
-          <div className={`step ${view === "welcome" ? "active" : "done"}`}><span className="step-num">1</span><span className="step-label">{t("welcome.select_category", lang)}</span></div>
-          <div className="step-line" />
-          <div className={`step ${view === "chat" ? "active" : view === "editor" || view === "preview" ? "done" : ""}`}><span className="step-num">{view === "welcome" ? "2" : view === "chat" ? "2" : "✓"}</span><span className="step-label">{t("chat.title", lang)}</span></div>
-          <div className="step-line" />
-          <div className={`step ${view === "editor" ? "active" : view === "preview" ? "done" : ""}`}><span className="step-num">{view === "preview" ? "✓" : "3"}</span><span className="step-label">{t("editor.title", lang)}</span></div>
-          <div className="step-line" />
-          <div className={`step ${view === "preview" ? "active" : ""}`}><span className="step-num">4</span><span className="step-label">{t("preview.print", lang)}</span></div>
-        </div>
-      )}
-
-      {/* ═══ MAIN ═══ */}
-      <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-
-        {/* ── LOGIN / REGISTER ── */}
-        {view === "login" && (
-          <div className="auth-root">
-            <div className="auth-card">
-              <div className="auth-logo">
-                <div className="auth-logo-icon"><ShieldAlert size={30} /></div>
-                <h1>{t("app.title", lang)}</h1>
-                <p>{authView === "login" ? t("auth.signin_title", lang) : t("auth.register_title", lang)}</p>
-              </div>
-
-              <div className="auth-tabs">
-                <button className={`auth-tab ${authView === "login" ? "active" : ""}`} onClick={() => { setAuthView("login"); setAuthError(""); }}>
-                  <LogIn size={14} style={{ marginRight: 6 }} />{t("auth.signin", lang)}
-                </button>
-                <button className={`auth-tab ${authView === "register" ? "active" : ""}`} onClick={() => { setAuthView("register"); setAuthError(""); }}>
-                  <User size={14} style={{ marginRight: 6 }} />{t("auth.register", lang)}
-                </button>
-              </div>
-
-              <form className="auth-form" onSubmit={authView === "login" ? handleLogin : handleRegister}>
-                {authView === "register" && (
-                  <>
-                    <div className="field">
-                      <label>{t("auth.full_name", lang)}</label>
-                      <input type="text" placeholder={t("auth.full_name_placeholder", lang)} value={authName} onChange={e => setAuthName(e.target.value)} required />
-                    </div>
-                    <div className="field">
-                      <label>{t("auth.phone", lang)}</label>
-                      <input type="tel" placeholder={t("auth.phone_placeholder", lang)} value={authPhone} onChange={e => setAuthPhone(e.target.value)} />
-                    </div>
-                  </>
-                )}
-                <div className="field">
-                  <label>{t("auth.email", lang)}</label>
-                  <input type="email" placeholder={t("auth.email_placeholder", lang)} value={authEmail} onChange={e => setAuthEmail(e.target.value)} required />
-                </div>
-                <div className="field">
-                  <label>{t("auth.password", lang)}</label>
-                  <div style={{ display: "flex", gap: "0.5rem" }}>
-                    <input type={showPassword ? "text" : "password"} placeholder={t("auth.password_placeholder", lang)} value={authPassword} onChange={e => setAuthPassword(e.target.value)} required style={{ paddingRight: "2.5rem" }} />
-                    <button type="button" className="btn btn-ghost" style={{ padding: "0.5rem" }} onClick={() => setShowPassword(!showPassword)}><Eye size={16} /></button>
-                  </div>
-                </div>
-                {authError && <div className="auth-error"><AlertTriangle size={14} />{authError}</div>}
-                <button className="btn btn-primary btn-full" type="submit" disabled={authLoading}>
-                  {authLoading ? <><Loader size={16} className="spin" /> {t("auth.processing", lang)}</> : <><LogIn size={16} /> {authView === "login" ? t("auth.signin_btn", lang) : t("auth.create_account", lang)}</>}
-                </button>
-              </form>
-
-              {authView === "login" && (
-                <p style={{ fontSize: "0.85rem", color: "var(--text-3)", textAlign: "center" }}>
-                  {t("auth.no_account", lang)}{" "}
-                  <button style={{ background: "none", border: "none", color: "var(--primary)", cursor: "pointer", fontWeight: 600, textDecoration: "underline", fontSize: "0.85rem" }}
-                    onClick={() => { setAuthView("register"); setAuthError(""); }}>{t("auth.register_here", lang)}</button>
-                </p>
-              )}
-            </div>
+      {/* ══ WELCOME ══════════════════════════════════════════ */}
+      {view === "welcome" && (
+        <div className="panel" style={{ maxWidth: 780, margin: "1.5rem auto", display: "flex", flexDirection: "column", gap: "1.75rem" }}>
+          <div style={{ textAlign: "center" }}>
+            <h2 style={{ fontSize: "1.8rem", marginBottom: "0.5rem" }}>
+              AI FIR Filing Portal
+            </h2>
+            <p style={{ color: "var(--text-2)", fontSize: "1rem" }}>
+              File your First Information Report using voice. Speak in <strong>English</strong>, <strong>हिन्दी</strong>, or <strong>తెలుగు</strong>.
+              No login required — all data stays local.
+            </p>
           </div>
-        )}
 
-        {/* ── WELCOME ── */}
-        {view === "welcome" && (
-          <div className="panel" style={{ maxWidth: 780, margin: "2rem auto", textAlign: "center", display: "flex", flexDirection: "column", gap: "2rem" }}>
-            <div>
-              <h2 style={{ fontSize: "1.8rem", marginBottom: "0.5rem" }}>{t("welcome.title", lang)}</h2>
-              <p style={{ color: "var(--text-2)", fontSize: "1rem" }}>
-                {t("welcome.desc", lang)}
-              </p>
-            </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: "2rem", fontSize: "0.85rem", fontWeight: 600 }}>
-              <span style={{ color: "var(--accent)" }}><ShieldCheck size={16} style={{ marginRight: 6, verticalAlign: "middle" }} />{t("welcome.zero_leak", lang)}</span>
-              <span style={{ color: "var(--primary)" }}><Lock size={16} style={{ marginRight: 6, verticalAlign: "middle" }} />{t("welcome.local_encrypt", lang)}</span>
-            </div>
-            <div style={{ textAlign: "left" }}>
-              <h3 style={{ fontSize: "1.1rem", borderBottom: "1px solid var(--border)", paddingBottom: "0.6rem", marginBottom: "1rem" }}>
-                {t("welcome.select_category", lang)}
-              </h3>
-              <div className="welcome-grid">
-                {[
-                  { key: "theft", name: "Theft / Burglary", icon: DollarSign, color: "var(--primary)" },
-                  { key: "assault", name: "Physical Assault / Threat", icon: AlertTriangle, color: "#f59e0b" },
-                  { key: "harassment", name: "Harassment / Stalking", icon: EyeOff, color: "#ec4899" },
-                  { key: "cyber", name: "Cyber Crime / Fraud", icon: Cpu, color: "var(--accent)" },
-                  { key: "missing", name: "Missing Person", icon: UserX, color: "#a855f7" },
-                  { key: "general", name: "General / Other", icon: FileText, color: "var(--text-3)" }
-                ].map(item => (
-                  <div key={item.name} className="complaint-card" onClick={() => startNewSession(item.name)}>
-                    <div className="complaint-card-icon"><item.icon size={22} style={{ color: item.color }} /></div>
-                    <div className="complaint-card-label">
-                      <span>{t(`cat.${item.key}`, lang)}</span>
-                      <ChevronRight size={15} style={{ color: "var(--text-3)" }} />
-                    </div>
-                  </div>
-                ))}
+          <div style={{ display: "flex", justifyContent: "center", gap: "2rem", flexWrap: "wrap" }}>
+            {[
+              { icon: Mic, label: "Voice-First", color: "#10b981" },
+              { icon: ShieldCheck, label: "100% Private", color: "#3b82f6" },
+              { icon: Languages, label: "3 Languages", color: "#a855f7" },
+            ].map(f => (
+              <div key={f.label} style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.85rem", fontWeight: 600, color: f.color }}>
+                <f.icon size={16} />{f.label}
               </div>
-            </div>
+            ))}
           </div>
-        )}
 
-        {/* ── CHAT ── */}
-        {view === "chat" && (
-          <div className="interview-layout">
-            <div className="panel convo-pane">
-              <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem", marginBottom: "0.75rem" }}>
-                <div>
-                  <h3 style={{ fontSize: "1rem" }}>{t("chat.title", lang)}</h3>
-                  <p style={{ fontSize: "0.78rem", color: "var(--text-2)" }}>{t("chat.turn_info", lang, { turn: currentTurn })}</p>
-                </div>
-                <div style={{ display: "flex", gap: "0.35rem" }}>
-                  <button className="btn btn-ghost" style={{ padding: "0.25rem 0.5rem", fontSize: "0.72rem" }} onClick={() => setIsMuted(!isMuted)}>
-                    {isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-                    <span>{isMuted ? t("chat.unmute", lang) : t("chat.mute", lang)}</span>
-                  </button>
-                </div>
-              </div>
+          {/* Language selector */}
+          <div style={{ display: "flex", justifyContent: "center", gap: "0.5rem" }}>
+            {["en-IN", "hi-IN", "te-IN"].map(l => (
+              <button key={l} className={`btn ${speechLang === l ? "btn-primary" : "btn-ghost"}`}
+                style={{ fontSize: "0.82rem", padding: "0.4rem 0.9rem" }}
+                onClick={() => setSpeechLang(l)}>
+                {LANG_NAMES[l === "en-IN" ? "en" : l === "hi-IN" ? "hi" : "te"]}
+              </button>
+            ))}
+          </div>
 
-              <div className="convo-messages">
-                {transcript.map((msg, i) => (
-                  <div key={i} className={`msg ${msg.role === "user" ? "msg-user" : "msg-bot"}`}>
-                    <div className="msg-bubble">
-                      <div className="msg-label">{msg.role === "user" ? t("chat.your_speech", lang) : t("chat.assistant", lang)}</div>
-                      {msg.content}
-                    </div>
-                  </div>
-                ))}
-                {isProcessing && (
-                  <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", color: "var(--text-2)", fontSize: "0.85rem" }}>
-                    <Loader size={15} className="spin" /> {t("chat.analyzing", lang)}
-                  </div>
-                )}
-                <div ref={chatBottomRef} />
-              </div>
-
-              <div className="voice-controls">
-                <AudioVisualizer isRecording={isRecording} />
-
-                <div style={{ display: "flex", alignItems: "center", gap: "1.5rem", width: "100%" }}>
-                  <div style={{ textAlign: "center", flex: "0 0 auto" }}>
-                    <button className={`mic-btn ${micState}`} onClick={toggleRecording} disabled={isProcessing}>
-                      {isRecording ? <MicOff size={30} /> : <Mic size={30} />}
-                    </button>
-                    <div className={`mic-status-label ${isRecording ? "green" : isProcessing ? "gray" : "gray"}`}>
-                      {isRecording ? t("chat.listening", lang) : t("chat.tap_to_speak", lang)}
-                    </div>
-                  </div>
-
-                  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-                    {recognitionError && <div className="auth-error" style={{ margin: 0 }}><AlertTriangle size={12} />{recognitionError}</div>}
-                    <form onSubmit={e => { e.preventDefault(); sendMessage(inputText); }} style={{ display: "flex", gap: "0.5rem" }}>
-                      <input type="text" className="form-input" placeholder={t("chat.type_placeholder", lang)} value={inputText}
-                        onChange={e => setInputText(e.target.value)} disabled={isProcessing} style={{ margin: 0 }} />
-                      <button className="btn btn-primary" type="submit" disabled={isProcessing || !inputText.trim()}><Send size={16} /></button>
-                    </form>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
-                  <button className="btn btn-danger" style={{ padding: "0.5rem 1rem" }} onClick={cancelSession}>{t("chat.cancel", lang)}</button>
-                  <button className="btn btn-accent" style={{ padding: "0.5rem 1rem" }} onClick={() => setView("editor")}>
-                    {t("chat.proceed", lang)} <ArrowRight size={15} />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Extraction Sidebar */}
-            <div className="panel extraction-pane">
-              <h3 style={{ fontSize: "0.95rem", borderBottom: "1px solid var(--border)", paddingBottom: "0.5rem" }}>{t("chat.live_extraction", lang)}</h3>
-              {extractionFields.map(item => (
-                <div key={item.key} className="ext-field">
-                  <span className="ext-label"><item.icon size={11} />{t(`field.${item.key}`, lang)}</span>
-                  <div className={`ext-value ${extractedData[item.key] ? "filled" : "empty"}`}>
-                    {extractedData[item.key] || t("chat.not_extracted", lang)}
+          <div>
+            <p style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.75rem" }}>
+              Select Complaint Category
+            </p>
+            <div className="welcome-grid">
+              {COMPLAINT_TYPES.map(ct => (
+                <div key={ct.name} className="complaint-card" onClick={() => startSession(ct.name)}>
+                  <div className="complaint-card-icon"><ct.icon size={22} style={{ color: ct.color }} /></div>
+                  <div className="complaint-card-label">
+                    <span>{ct.name}</span>
+                    <ArrowRight size={15} style={{ color: "var(--text-3)" }} />
                   </div>
                 </div>
               ))}
-              <div className="turn-bar">
-                {extractionFields.map((f, i) => <div key={f.key} className={`turn-dot ${extractedData[f.key] ? "done" : ""}`} style={{ transitionDelay: `${i * 0.05}s` }} />)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ VOICE CHAT ════════════════════════════════════════ */}
+      {view === "chat" && (
+        <div className="interview-layout" style={{ flex: 1 }}>
+          <div className="panel convo-pane">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+              borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem", marginBottom: "0.75rem" }}>
+              <div>
+                <h3 style={{ fontSize: "1rem" }}>Voice Interview — {complaintType}</h3>
+                <p style={{ fontSize: "0.75rem", color: "var(--text-3)" }}>
+                  Turn {currentTurn} · {langDisplay} · Speak when mic is green
+                </p>
               </div>
-              <div style={{ background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.15)", borderRadius: "var(--radius-sm)", padding: "0.6rem", fontSize: "0.72rem", color: "var(--text-2)", marginTop: "auto" }}>
-                {t("chat.extraction_hint", lang)}
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button className="btn btn-ghost" style={{ fontSize: "0.78rem", padding: "0.3rem 0.65rem" }}
+                  onClick={cycleLanguage} title="Change language">
+                  <Languages size={14} /> <span style={{ marginLeft: 4 }}>{langDisplay}</span>
+                </button>
+                <button className="btn btn-ghost" style={{ fontSize: "0.78rem", padding: "0.3rem 0.65rem" }}
+                  onClick={() => { ttsRef.current?.stop(); setIsMuted(m => !m); }}>
+                  {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                  <span style={{ marginLeft: 4 }}>{isMuted ? "Muted" : "Audio"}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="convo-messages">
+              {transcript.map((msg, i) => (
+                <div key={i} className={`msg msg-${msg.role === "user" ? "user" : "bot"}`}>
+                  <div>
+                    <div className="msg-label">
+                      {msg.role === "user" ? "You said" : "AI Assistant"}
+                    </div>
+                    <div className="msg-bubble">{msg.content}</div>
+                  </div>
+                </div>
+              ))}
+              {micState === MIC_STATE.PROCESSING && (
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", color: "var(--text-3)", fontSize: "0.82rem" }}>
+                  <Loader size={14} className="spin" /> Analyzing...
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            <div className="voice-controls">
+              <div className="visualizer-wrap">
+                <AudioVisualizer isRecording={micState === MIC_STATE.LISTENING} />
+              </div>
+
+              <div className={`live-text-box ${liveText ? "has-text" : ""}`}>
+                {liveText || (
+                  micState === MIC_STATE.LISTENING ? "🎤 Listening — speak now..." :
+                  micState === MIC_STATE.SPEAKING   ? "🔊 AI is speaking..." :
+                  micState === MIC_STATE.PROCESSING  ? "⚙️ Processing..." :
+                  "Tap the microphone to speak"
+                )}
+              </div>
+
+              {voiceError && (
+                <div style={{ display: "flex", gap: "0.4rem", alignItems: "flex-start",
+                  color: "#fca5a5", fontSize: "0.8rem", background: "rgba(239,68,68,0.08)",
+                  border: "1px solid rgba(239,68,68,0.2)", borderRadius: "0.4rem", padding: "0.5rem 0.75rem" }}>
+                  <AlertTriangle size={13} style={{ marginTop: 1, flexShrink: 0 }} />
+                  <span>{voiceError}</span>
+                </div>
+              )}
+
+              <button className={`mic-btn ${micState}`} onClick={toggleMic}
+                disabled={micState === MIC_STATE.PROCESSING} title={micLabel.text}>
+                {micState === MIC_STATE.LISTENING
+                  ? <MicOff size={34} />
+                  : micState === MIC_STATE.PROCESSING || micState === MIC_STATE.SPEAKING
+                    ? <Loader size={30} className="spin" />
+                    : <Mic size={34} />
+                }
+              </button>
+
+              <span className={`mic-status-label ${micLabel.cls}`}>{micLabel.text}</span>
+
+              <div style={{ display: "flex", gap: "0.75rem", width: "100%", justifyContent: "space-between" }}>
+                <button className="btn btn-ghost btn-danger"
+                  style={{ fontSize: "0.82rem", padding: "0.45rem 0.9rem" }}
+                  onClick={() => { ttsRef.current?.stop(); stopListening(); setView("welcome"); }}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary"
+                  style={{ fontSize: "0.82rem", padding: "0.45rem 0.9rem" }}
+                  onClick={() => { ttsRef.current?.stop(); stopListening(); setView("editor"); }}>
+                  Review Form <ArrowRight size={14} />
+                </button>
               </div>
             </div>
           </div>
-        )}
 
-        {/* ── EDITOR ── */}
-        {view === "editor" && (
-          <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-            <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem" }}>
-              <h2>{t("editor.title", lang)}</h2>
-              <p style={{ color: "var(--text-2)", fontSize: "0.85rem" }}>{t("editor.desc", lang)}</p>
+          {/* Extraction sidebar */}
+          <div className="panel extraction-pane">
+            <h3 style={{ fontSize: "0.85rem", borderBottom: "1px solid var(--border)",
+              paddingBottom: "0.45rem", marginBottom: "0.25rem" }}>
+              Live Extraction
+            </h3>
+            {EXTRACTION_FIELDS.map(f => (
+              <div key={f.key} className="ext-field" style={f.span === 2 ? { gridColumn: "span 2" } : {}}>
+                <div className="ext-label"><f.icon size={11} />{f.label}</div>
+                <div className={`ext-value ${extractedData[f.key] ? "filled" : "empty"}`}>
+                  {extractedData[f.key] || "—"}
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: "0.72rem", color: "var(--text-3)", lineHeight: 1.5,
+              background: "rgba(59,130,246,0.05)", border: "1px solid rgba(59,130,246,0.1)",
+              borderRadius: "0.4rem", padding: "0.6rem", marginTop: "auto" }}>
+              Fields auto-extract from speech. Edit on the next page.
             </div>
-            <div className="editor-grid">
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                  <div className="form-group">
-                    <label className="form-label">{t("editor.victim_label", lang)}</label>
-                    <input type="text" className="form-input" value={extractedData.victim_name || ""}
-                      onChange={e => setExtractedData({ ...extractedData, victim_name: e.target.value })} placeholder={t("editor.victim_placeholder", lang)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">{t("editor.contact_label", lang)}</label>
-                    <input type="text" className="form-input" value={extractedData.victim_contact || ""}
-                      onChange={e => setExtractedData({ ...extractedData, victim_contact: e.target.value })} placeholder={t("editor.contact_placeholder", lang)} />
-                  </div>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
-                  <div className="form-group">
-                    <label className="form-label">{t("editor.datetime_label", lang)}</label>
-                    <input type="text" className="form-input" value={extractedData.incident_date_time || ""}
-                      onChange={e => setExtractedData({ ...extractedData, incident_date_time: e.target.value })} placeholder={t("editor.datetime_placeholder", lang)} />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">{t("editor.location_label", lang)}</label>
-                    <input type="text" className="form-input" value={extractedData.incident_location || ""}
-                      onChange={e => setExtractedData({ ...extractedData, incident_location: e.target.value })} placeholder={t("editor.location_placeholder", lang)} />
-                  </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ EDITOR ════════════════════════════════════════════ */}
+      {view === "editor" && (
+        <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem" }}>
+            <h2 style={{ fontSize: "1.2rem" }}>Review & Edit FIR Draft</h2>
+            <p style={{ color: "var(--text-2)", fontSize: "0.85rem", marginTop: "0.25rem" }}>
+              Verify extracted details. Correct errors before generating the official document.
+            </p>
+          </div>
+
+          <div className="editor-grid">
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div className="form-group">
+                  <label className="form-label">Complainant Name</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.victim_name || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, victim_name: e.target.value }))}
+                    placeholder="Full name" />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">{t("editor.suspect_label", lang)}</label>
-                  <input type="text" className="form-input" value={extractedData.suspect_details || ""}
-                    onChange={e => setExtractedData({ ...extractedData, suspect_details: e.target.value })} placeholder={t("editor.suspect_placeholder", lang)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">{t("editor.evidence_label", lang)}</label>
-                  <input type="text" className="form-input" value={extractedData.evidence || ""}
-                    onChange={e => setExtractedData({ ...extractedData, evidence: e.target.value })} placeholder={t("editor.evidence_placeholder", lang)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">{t("editor.witness_label", lang)}</label>
-                  <input type="text" className="form-input" value={extractedData.witness || ""}
-                    onChange={e => setExtractedData({ ...extractedData, witness: e.target.value })} placeholder={t("editor.witness_placeholder", lang)} />
+                  <label className="form-label">Contact Number</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.victim_contact || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, victim_contact: e.target.value }))}
+                    placeholder="10-digit number" />
                 </div>
               </div>
-              <div className="form-group" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-                <label className="form-label">{t("editor.narrative_label", lang)}</label>
-                <textarea className="form-textarea" style={{ flex: 1, resize: "none" }} value={extractedData.description || ""}
-                  onChange={e => setExtractedData({ ...extractedData, description: e.target.value })} placeholder={t("editor.narrative_placeholder", lang)} />
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div className="form-group">
+                  <label className="form-label">Date & Time</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.incident_date_time || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, incident_date_time: e.target.value }))}
+                    placeholder="e.g. 23/05/2026 09:30 PM" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Location</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.incident_location || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, incident_location: e.target.value }))}
+                    placeholder="Address / landmark" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Suspect Details</label>
+                <input className="form-input" type="text"
+                  value={extractedData.suspect_details || ""}
+                  onChange={e => setExtractedData(d => ({ ...d, suspect_details: e.target.value }))}
+                  placeholder="Height, clothing, name..." />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div className="form-group">
+                  <label className="form-label">Stolen Item</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.stolen_item || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, stolen_item: e.target.value }))}
+                    placeholder="Items stolen" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Vehicle Number</label>
+                  <input className="form-input" type="text"
+                    value={extractedData.vehicle_number || ""}
+                    onChange={e => setExtractedData(d => ({ ...d, vehicle_number: e.target.value }))}
+                    placeholder="e.g. AP12AB3456" />
+                </div>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Evidence / Witnesses</label>
+                <input className="form-input" type="text"
+                  value={extractedData.evidence || ""}
+                  onChange={e => setExtractedData(d => ({ ...d, evidence: e.target.value }))}
+                  placeholder="CCTV, photos, witness names..." />
               </div>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn btn-ghost" onClick={() => setView("chat")}>{t("editor.back_to_voice", lang)}</button>
-                <button className="btn btn-ghost" style={{ color: "var(--danger)" }} onClick={() => setExtractedData({ victim_name: "", victim_contact: "", incident_date_time: "", incident_location: "", suspect_details: "", evidence: "", witness: "", description: "" })}>
-                  {t("editor.clear_all", lang)}
-                </button>
-              </div>
-              <button className="btn btn-accent" onClick={saveFIR} disabled={isProcessing}>
-                <Check size={17} /> {t("editor.save_preview", lang)}
+
+            <div className="form-group" style={{ display: "flex", flexDirection: "column" }}>
+              <label className="form-label">Full Incident Description</label>
+              <textarea className="form-textarea" style={{ flex: 1, minHeight: 280 }}
+                value={extractedData.description || ""}
+                onChange={e => setExtractedData(d => ({ ...d, description: e.target.value }))}
+                placeholder="Complete narrative of the incident..." />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", paddingTop: "0.5rem" }}>
+            <div style={{ display: "flex", gap: "0.5rem" }}>
+              <button className="btn btn-ghost" onClick={() => setView("chat")}>
+                ← Back to Voice
+              </button>
+              <button className="btn btn-ghost btn-danger" onClick={() => setExtractedData({ ...EMPTY_FIR })}>
+                Clear All
+              </button>
+            </div>
+            <button className="btn btn-accent" onClick={saveFIR}>
+              <Check size={16} /> Save & Generate FIR
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ══ PREVIEW ═══════════════════════════════════════════ */}
+      {view === "preview" && selectedFir && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+          <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <h2 style={{ fontSize: "1.1rem" }}>FIR Saved</h2>
+              <p style={{ color: "var(--text-2)", fontSize: "0.82rem" }}>
+                Review below, then Print or Download as PDF.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: "0.6rem" }}>
+              <button className="btn btn-ghost" onClick={() => setView("editor")}><Edit size={15} /> Edit</button>
+              <button className="btn btn-primary" onClick={() => downloadFIR("fir-preview-doc")}>
+                <FileText size={15} /> Download PDF
+              </button>
+              <button className="btn btn-ghost" onClick={() => window.print()}>
+                <Printer size={15} /> Print
+              </button>
+              <button className="btn btn-ghost" onClick={() => setView("welcome")}>
+                <Home size={15} /> Home
               </button>
             </div>
           </div>
-        )}
 
-        {/* ── PREVIEW ── */}
-        {view === "preview" && selectedFir && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            <div className="panel" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <h2>{t("preview.title", lang)}</h2>
-                <p style={{ color: "var(--text-2)", fontSize: "0.82rem" }}>{t("preview.desc", lang)}</p>
-              </div>
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button className="btn btn-ghost" onClick={() => setView("editor")}><Edit size={15} /> {t("preview.modify", lang)}</button>
-                <button className="btn btn-primary" onClick={handlePrint}><Printer size={15} /> {t("preview.print", lang)}</button>
-                <button className="btn btn-ghost" onClick={() => setView("welcome")}><Home size={15} /> {t("preview.home", lang)}</button>
-              </div>
+          <div className="fir-preview-doc" id="fir-preview-doc">
+            <div className="fir-doc-header">
+              <h1>First Information Report</h1>
+              <p>Under Section 154 Cr.P.C. — AI-Generated Draft</p>
             </div>
-
-            <div className="fir-preview-doc">
-              <div className="fir-doc-header">
-                <h1>{t("fir.title", lang)}</h1>
-                <p>{t("fir.subtitle", lang)}</p>
-              </div>
-              <div className="fir-meta-grid">
-                <div><strong>{t("fir.complaint_type", lang)}:</strong> {selectedFir.complaint_type}</div>
-                <div><strong>{t("fir.report_id", lang)}:</strong> AI-FIR-{selectedFir.id}</div>
-                <div><strong>{t("fir.date", lang)}:</strong> {new Date(selectedFir.created_at).toLocaleString()}</div>
-                <div><strong>{t("fir.status", lang)}:</strong> {selectedFir.status}</div>
-              </div>
-
-              <div className="fir-section-title">{t("fir.section1", lang)}</div>
-              <div className="fir-detail-grid">
-                <div><strong>{t("fir.name", lang)}:</strong></div><div>{selectedFir.victim_name}</div>
-                <div><strong>{t("fir.contact", lang)}:</strong></div><div>{selectedFir.victim_contact}</div>
-              </div>
-
-              <div className="fir-section-title">{t("fir.section2", lang)}</div>
-              <div className="fir-detail-grid">
-                <div><strong>{t("fir.date_time", lang)}:</strong></div><div>{selectedFir.incident_date_time}</div>
-                <div><strong>{t("fir.location", lang)}:</strong></div><div>{selectedFir.incident_location}</div>
-                <div><strong>{t("fir.suspect", lang)}:</strong></div><div>{selectedFir.suspect_details}</div>
-                <div><strong>{t("fir.evidence", lang)}:</strong></div><div>{selectedFir.evidence}</div>
-              </div>
-
-              <div className="fir-section-title">{t("fir.section3", lang)}</div>
-              <div className="fir-narrative">{selectedFir.description}</div>
-
-              <div className="fir-sigs">
-                <div className="fir-sig-block">
-                  <div className="fir-sig-line">{t("fir.sig_complainant", lang)}</div>
-                </div>
-                <div className="fir-sig-block">
-                  <div className="fir-sig-line">{t("fir.sig_authority", lang)}</div>
-                </div>
-              </div>
+            <div className="fir-meta-grid">
+              <div><strong>Reference:</strong> AI-FIR-{selectedFir._id || selectedFir.id}</div>
+              <div><strong>Type:</strong> {selectedFir.complaint_type}</div>
+              <div><strong>Date:</strong> {new Date(selectedFir.createdAt || selectedFir.created_at).toLocaleString()}</div>
+              <div><strong>Status:</strong> {selectedFir.status}</div>
+            </div>
+            <div className="fir-section-title">1. Complainant / Victim Details</div>
+            <div className="fir-detail-grid">
+              <strong>Name:</strong>     <span>{selectedFir.victim_name}</span>
+              <strong>Contact:</strong>  <span>{selectedFir.victim_contact}</span>
+            </div>
+            <div className="fir-section-title">2. Incident Details</div>
+            <div className="fir-detail-grid">
+              <strong>Date/Time:</strong> <span>{selectedFir.incident_date_time}</span>
+              <strong>Location:</strong>  <span>{selectedFir.incident_location}</span>
+              <strong>Suspect:</strong>   <span>{selectedFir.suspect_details}</span>
+              <strong>Stolen Item:</strong> <span>{selectedFir.stolen_item || "N/A"}</span>
+              <strong>Vehicle No.:</strong> <span>{selectedFir.vehicle_number || "N/A"}</span>
+              <strong>Evidence:</strong>  <span>{selectedFir.evidence}</span>
+            </div>
+            <div className="fir-section-title">3. Incident Narrative</div>
+            <div className="fir-narrative">{selectedFir.description}</div>
+            <div className="fir-sigs">
+              <div className="fir-sig-block"><div className="fir-sig-line">Signature of Complainant</div></div>
+              <div className="fir-sig-block"><div className="fir-sig-line">IO Stamp & Signature</div></div>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* ── HISTORY ── */}
-        {view === "history" && (
-          <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem" }}>
-              <div>
-                <h2>{t("history.title", lang)}</h2>
-                <p style={{ color: "var(--text-2)", fontSize: "0.82rem" }}>{t("history.desc", lang)}</p>
-              </div>
-              <button className="btn btn-ghost" onClick={() => setView("welcome")}><Home size={15} /> {t("app.home", lang)}</button>
+      {/* ══ HISTORY ═══════════════════════════════════════════ */}
+      {view === "history" && (
+        <div className="panel" style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+            borderBottom: "1px solid var(--border)", paddingBottom: "0.75rem" }}>
+            <div>
+              <h2 style={{ fontSize: "1.1rem" }}>Saved FIR Records</h2>
+              <p style={{ color: "var(--text-2)", fontSize: "0.82rem" }}>All records stored locally.</p>
             </div>
-            {savedFirs.length === 0 ? (
-              <div style={{ padding: "3rem", textAlign: "center", color: "var(--text-3)" }}>
-                <FileText size={48} style={{ opacity: 0.3, margin: "0 auto 1rem", display: "block" }} />
-                <p>{t("history.empty", lang)}</p>
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table className="history-table">
-                  <thead><tr>
-                    <th>{t("history.col_id", lang)}</th><th>{t("history.col_date", lang)}</th><th>{t("history.col_category", lang)}</th><th>{t("history.col_name", lang)}</th><th>{t("history.col_contact", lang)}</th><th>{t("history.col_actions", lang)}</th>
-                  </tr></thead>
-                  <tbody>
-                    {savedFirs.map(fir => (
-                      <tr key={fir.id} onClick={() => { setSelectedFir(fir); setView("preview"); }}>
-                        <td style={{ fontWeight: 700 }}>AI-FIR-{fir.id}</td>
-                        <td>{new Date(fir.created_at).toLocaleDateString()}</td>
-                        <td>{fir.complaint_type}</td>
-                        <td>{fir.victim_name}</td>
-                        <td>{fir.victim_contact}</td>
-                        <td>
-                          <button className="btn btn-ghost" style={{ padding: "0.25rem 0.6rem", fontSize: "0.78rem" }}
-                            onClick={e => { e.stopPropagation(); setSelectedFir(fir); setView("preview"); }}>{t("history.open", lang)}</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <button className="btn btn-ghost" onClick={() => setView("welcome")}><Home size={15} /> Home</button>
           </div>
-        )}
-      </main>
 
-      {/* ── PRINT LAYOUT ── */}
+          {savedFirs.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "4rem", color: "var(--text-3)" }}>
+              <FileText size={44} style={{ opacity: 0.3, marginBottom: "1rem" }} />
+              <p>No FIR records found.</p>
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table className="history-table">
+                <thead>
+                  <tr>
+                    <th>ID</th><th>Date</th><th>Category</th>
+                    <th>Name</th><th>Contact</th><th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedFirs.map(fir => (
+                    <tr key={fir._id || fir.id} onClick={() => { setSelectedFir(fir); setView("preview"); }}>
+                      <td><strong>AI-FIR-{String(fir._id || fir.id).slice(-6)}</strong></td>
+                      <td>{new Date(fir.createdAt || fir.created_at).toLocaleDateString()}</td>
+                      <td>{fir.complaint_type}</td>
+                      <td>{fir.victim_name}</td>
+                      <td>{fir.victim_contact}</td>
+                      <td>
+                        <span style={{ padding: "0.2rem 0.6rem", borderRadius: "12px", fontSize: "0.75rem",
+                          background: "rgba(16,185,129,0.1)", color: "#10b981", border: "1px solid rgba(16,185,129,0.2)" }}>
+                          {fir.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══ PRINT LAYOUT ══════════════════════════════════════ */}
       {selectedFir && (
         <div className="print-only">
           <div className="print-watermark">{t("print.confidential", lang)}</div>
           <div className="print-header">
-            <h1>{t("print.title", lang)}</h1>
-            <p>{t("print.subtitle", lang)}</p>
+            <h1>First Information Report</h1>
+            <p>Under Section 154 of the Code of Criminal Procedure (Cr.P.C.)</p>
           </div>
           <div className="print-meta">
-            <div><strong>1. {t("print.district", lang)}:</strong> LOCAL INCIDENT PORTAL</div>
-            <div><strong>2. {t("fir.date", lang)}:</strong> {new Date(selectedFir.created_at).toLocaleString()}</div>
-            <div><strong>3. {t("print.fir_ref", lang)}:</strong> AI-FIR-{selectedFir.id}</div>
-            <div><strong>4. {t("print.category", lang)}:</strong> {selectedFir.complaint_type}</div>
+            <div><strong>Ref:</strong> AI-FIR-{String(selectedFir._id || selectedFir.id).slice(-6)}</div>
+            <div><strong>Date:</strong> {new Date(selectedFir.createdAt || selectedFir.created_at).toLocaleString()}</div>
+            <div><strong>Category:</strong> {selectedFir.complaint_type}</div>
+            <div><strong>Status:</strong> {selectedFir.status}</div>
           </div>
           <div className="print-section">
-            <h2>{t("print.section5", lang)}</h2>
+            <h2>1. Complainant / Victim Details</h2>
             <div className="print-detail">
-              <div><strong>{t("print.full_name", lang)}:</strong> {selectedFir.victim_name}</div>
-              <div><strong>{t("print.contact_no", lang)}:</strong> {selectedFir.victim_contact}</div>
+              <strong>Name:</strong>    <span>{selectedFir.victim_name}</span>
+              <strong>Contact:</strong> <span>{selectedFir.victim_contact}</span>
             </div>
           </div>
           <div className="print-section">
-            <h2>{t("print.section6", lang)}</h2>
+            <h2>2. Incident Details</h2>
             <div className="print-detail">
-              <div><strong>{t("print.place", lang)}:</strong> {selectedFir.incident_location}</div>
-              <div><strong>{t("print.date_time", lang)}:</strong> {selectedFir.incident_date_time}</div>
-              <div><strong>{t("print.suspect", lang)}:</strong> {selectedFir.suspect_details}</div>
-              <div><strong>{t("print.evidence", lang)}:</strong> {selectedFir.evidence}</div>
+              <strong>Date/Time:</strong>  <span>{selectedFir.incident_date_time}</span>
+              <strong>Location:</strong>   <span>{selectedFir.incident_location}</span>
+              <strong>Suspect:</strong>    <span>{selectedFir.suspect_details}</span>
+              <strong>Stolen Item:</strong> <span>{selectedFir.stolen_item || "N/A"}</span>
+              <strong>Vehicle No.:</strong> <span>{selectedFir.vehicle_number || "N/A"}</span>
+              <strong>Evidence:</strong>   <span>{selectedFir.evidence}</span>
             </div>
           </div>
           <div className="print-section">
-            <h2>{t("print.section7", lang)}</h2>
+            <h2>3. Incident Narrative</h2>
             <div className="print-narrative">{selectedFir.description}</div>
           </div>
           <div className="print-sigs">
-            <div className="print-sig"><div className="print-sig-line">{t("print.sig_complainant", lang)}</div></div>
-            <div className="print-sig"><div className="print-sig-line">{t("print.sig_authority", lang)}</div></div>
+            <div className="print-sig"><div className="print-sig-line">Signature of Complainant</div></div>
+            <div className="print-sig"><div className="print-sig-line">IO Stamp & Signature</div></div>
           </div>
         </div>
       )}

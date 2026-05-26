@@ -1,0 +1,43 @@
+⚠️ MongoDB not available, running in offline mode
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
+Chat error: MongooseError: Cannot call `sessions.findOne()` before initial connection is complete if `bufferCommands = false`. Make sure you `await mongoose.connect()` if you have `bufferCommands = false`.
+    at NativeCollection.<computed> [as findOne] (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\drivers\node-mongodb-native\collection.js:237:15)
+    at model.Query._findOne (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:2710:45)
+    at model.Query.exec (D:\aiproject\aifirproject\backend\node_modules\mongoose\lib\query.js:4627:80)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async file:///D:/aiproject/aifirproject/backend/routes/chat.mjs:18:19
